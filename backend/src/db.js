@@ -1,6 +1,13 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -16,19 +23,12 @@ pool.on('error', (err) => {
 });
 
 export const initDb = async () => {
-    const createUserTableQuery = `
-        CREATE TABLE IF NOT EXISTS users (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(100) NOT NULL,
-            email VARCHAR(255) UNIQUE NOT NULL,
-            password_hash VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `;
-
     try {
-        await pool.query(createUserTableQuery);
-        console.log('Database tables initialized');
+        const schemaPath = path.join(__dirname, '../../database/schema.sql');
+        const schema = fs.readFileSync(schemaPath, 'utf-8');
+        
+        await pool.query(schema);
+        console.log('Database tables initialized from schema.sql');
     } catch (error) {
         console.error('Error initializing database tables:', error);
     }
