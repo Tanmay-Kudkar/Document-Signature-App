@@ -1,13 +1,17 @@
 import React, { useRef, useState } from 'react';
-import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import Dashboard from './pages/Dashboard';
+import { uploadDocument } from './lib/documents';
 
 function App() {
   const fileInputRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const [isUploading, setIsUploading] = useState(false);
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -21,6 +25,30 @@ function App() {
 
   const toggleMenu = () => {
     setIsMenuOpen(!isMenuOpen);
+  };
+
+  const handleUploadAndNavigate = async () => {
+    if (!selectedFile) {
+      navigate('/dashboard');
+      return;
+    }
+
+    try {
+      setIsUploading(true);
+      const document = await uploadDocument(selectedFile);
+      setSelectedFile(null);
+      navigate('/dashboard', {
+        state: {
+          uploadedDocumentId: document.id,
+          refreshDocuments: true,
+        },
+      });
+    } catch (error) {
+      console.error('Upload failed', error);
+      alert(error.message || 'Upload failed. Check console for details.');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   // If we are on login or signup pages, don't show the main layout
@@ -213,8 +241,12 @@ function App() {
                           </svg>
                        </div>
                        
-                       <button className="bg-[#e5322d] text-white text-base md:text-[17px] font-bold py-2.5 md:py-3 px-6 md:px-8 rounded-lg mb-2 md:mb-3 hover:bg-[#cc2b26] transition w-full md:w-[85%] truncate">
-                         Only me
+                       <button
+                         className="bg-[#e5322d] text-white text-base md:text-[17px] font-bold py-2.5 md:py-3 px-6 md:px-8 rounded-lg mb-2 md:mb-3 hover:bg-[#cc2b26] transition w-full md:w-[85%] truncate"
+                         onClick={handleUploadAndNavigate}
+                         disabled={isUploading}
+                       >
+                         {isUploading ? 'Uploading...' : 'Only me'}
                        </button>
                        <p className="text-sm md:text-[15px] text-[#707078]">Sign this document</p>
                      </div>
@@ -228,8 +260,12 @@ function App() {
                           </svg>
                        </div>
                        
-                       <button className="bg-[#e5322d] text-white text-base md:text-[17px] font-bold py-2.5 md:py-3 px-6 md:px-8 rounded-lg mb-2 md:mb-3 hover:bg-[#cc2b26] transition w-full md:w-[85%] truncate">
-                         Several people
+                       <button
+                         className="bg-[#e5322d] text-white text-base md:text-[17px] font-bold py-2.5 md:py-3 px-6 md:px-8 rounded-lg mb-2 md:mb-3 hover:bg-[#cc2b26] transition w-full md:w-[85%] truncate"
+                         onClick={handleUploadAndNavigate}
+                         disabled={isUploading}
+                       >
+                         {isUploading ? 'Uploading...' : 'Several people'}
                        </button>
                        <p className="text-sm md:text-[15px] text-[#707078]">Invite others to sign</p>
                      </div>
@@ -287,6 +323,7 @@ function App() {
             </footer>
           </>
         } />
+            <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
     </div>
   )
