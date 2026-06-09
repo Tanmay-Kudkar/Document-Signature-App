@@ -10,11 +10,12 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Documents Table: Stores metadata and file paths for uploaded PDFs
+-- Documents Table: Stores metadata and file data for uploaded PDFs
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    file_path VARCHAR(255) NOT NULL,
+    file_data BYTEA,
+    file_path VARCHAR(255),
     original_name VARCHAR(255) NOT NULL,
     upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(50) DEFAULT 'uploaded'

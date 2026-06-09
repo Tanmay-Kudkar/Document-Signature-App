@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Document, Page, pdfjs } from 'react-pdf';
+import { useEffect, useRef, useState } from 'react';
+import { Document, Page } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
@@ -7,9 +7,10 @@ import {
   fetchDocumentFile,
   getDocument,
   listDocuments,
+  getSignatures,
+  createSignature,
+  deleteDocument,
 } from '../lib/documents';
-
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 const formatDate = (value) => {
   if (!value) {
@@ -61,7 +62,11 @@ export default function Dashboard() {
   const [pageWidth, setPageWidth] = useState(640);
   const [previewScale, setPreviewScale] = useState(1);
   const [previewError, setPreviewError] = useState('');
+  const [signatures, setSignatures] = useState([]);
+  const [placingSignature, setPlacingSignature] = useState(false);
+  const pageWrapperRef = useRef(null);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
 
   useEffect(() => {
     if (!previewPanelRef.current || typeof ResizeObserver === 'undefined') {
@@ -82,8 +87,15 @@ export default function Dashboard() {
 
     const loadDocuments = async () => {
       if (!token) {
-        setDocuments([]);
-        setDocumentsError('Login to view your uploaded documents.');
+        // Check if we have a temporary document from recent upload
+        if (location.state?.tempDocument) {
+          setDocuments([]);
+          setSelectedDocument(location.state.tempDocument);
+          setDocumentsError('');
+        } else {
+          setDocuments([]);
+          setDocumentsError('Login to view your uploaded documents.');
+        }
         setIsLoadingDocuments(false);
         return;
       }
@@ -118,7 +130,12 @@ export default function Dashboard() {
       } catch (error) {
         if (isMounted) {
           console.error(error);
-          setDocumentsError(error.message || 'Unable to load documents.');
+          if (error.message === 'Invalid or expired token' || error.message === 'Access token is missing') {
+            localStorage.removeItem('token');
+            navigate('/login');
+          } else {
+            setDocumentsError(error.message || 'Unable to load documents.');
+          }
         }
       } finally {
         if (isMounted) {
@@ -175,6 +192,91 @@ export default function Dashboard() {
     };
   }, [selectedDocumentId]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadSignatures = async () => {
+      if (!selectedDocumentId) {
+        setSignatures([]);
+        return;
+      }
+
+      try {
+        const data = await getSignatures(selectedDocumentId);
+        if (isMounted) setSignatures(data || []);
+      } catch (err) {
+        console.error('Error loading signatures', err);
+        if (isMounted) setSignatures([]);
+      }
+    };
+
+    loadSignatures();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedDocumentId]);
+
+
+  // Fetch PDF bytes (Uint8Array) to avoid remote fetch and CORS/auth problems
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadPreviewData = async () => {
+      setPreviewError('');
+      setPreviewData(null);
+
+      if (!selectedDocument) return;
+
+      try {
+        if (selectedDocument.previewData) {
+          // previewData may already be a data URL string from temporary uploads
+          if (isMounted) setPreviewData(selectedDocument.previewData);
+          return;
+        }
+
+        const blob = await fetchDocumentFile(selectedDocumentId, false);
+        const arrayBuffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        // Pass an object with `data` to react-pdf to avoid worker fetch issues
+        if (isMounted) setPreviewData({ data: bytes });
+      } catch (err) {
+        console.error('Preview fetch error', err);
+        if (isMounted) setPreviewError(err.message || 'Unable to fetch preview');
+      }
+    };
+
+    loadPreviewData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedDocumentId, selectedDocument]);
+
+  const handlePlaceClick = async (ev) => {
+    if (!placingSignature || !selectedDocumentId) return;
+    const wrapper = pageWrapperRef.current;
+    if (!wrapper) return;
+
+    const rect = wrapper.getBoundingClientRect();
+    const clickX = ev.clientX - rect.left;
+    const clickY = ev.clientY - rect.top;
+
+    const xPercent = Math.max(0, Math.min(100, (clickX / rect.width) * 100));
+    const yPercent = Math.max(0, Math.min(100, (clickY / rect.height) * 100));
+
+    try {
+      await createSignature(selectedDocumentId, { pageNumber: currentPage, x: xPercent, y: yPercent });
+      const refreshed = await getSignatures(selectedDocumentId);
+      setSignatures(refreshed || []);
+    } catch (err) {
+      console.error('Error placing signature', err);
+      alert(err.message || 'Unable to place signature');
+    } finally {
+      setPlacingSignature(false);
+    }
+  };
+
   const handlePdfLoaded = ({ numPages: loadedPages }) => {
     setNumPages(loadedPages);
     setCurrentPage(1);
@@ -215,10 +317,10 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(229,50,45,0.12),_transparent_30%),linear-gradient(180deg,_#fff8f7_0%,_#f6f7fb_45%,_#eef2ff_100%)] text-slate-900">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <div className="flex flex-col gap-4 rounded-[28px] border border-white/70 bg-white/80 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur xl:flex-row xl:items-center xl:justify-between">
+        {/* Logout is provided by the shared header/layout; remove duplicate button here */}
+          <div className="flex flex-col gap-4 rounded-3xl border border-white/60 bg-white p-8 shadow-xl xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-[#e5322d]">Day 4 Workspace</p>
-            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Document Library</h1>
+            <h1 className="mt-2 text-4xl font-black tracking-tight text-slate-950">Document Library</h1>
             <p className="mt-2 max-w-2xl text-sm text-slate-600 sm:text-base">
               Review uploaded PDFs, open them in a secure preview, and move page by page without leaving the dashboard.
             </p>
@@ -242,12 +344,27 @@ export default function Dashboard() {
         </div>
 
         <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
-          <section className="rounded-[28px] border border-white/70 bg-white/85 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur">
+          <section className="rounded-[28px] border border-white/70 bg-white/85 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur order-2 lg:order-1">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-950">Uploaded files</h2>
                 <p className="text-sm text-slate-500">{documents.length} document{documents.length === 1 ? '' : 's'} available</p>
               </div>
+            </div>
+
+            <div className="mb-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <a href="#" className="flex items-center gap-3 rounded-2xl border bg-white p-3 hover:shadow transition">
+                <div className="h-9 w-9 flex items-center justify-center rounded-lg bg-[#fef2f2] text-[#e5322d]"><svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M20 6H4v12h16V6zm-2 10H6V8h12v8zM8 10h8v2H8z"/></svg></div>
+                <div className="text-sm font-semibold text-slate-800">Merge PDF</div>
+              </a>
+              <a href="#" className="flex items-center gap-3 rounded-2xl border bg-white p-3 hover:shadow transition">
+                <div className="h-9 w-9 flex items-center justify-center rounded-lg bg-[#eff6ff] text-[#1e40af]"><svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4v16m8-8H4"/></svg></div>
+                <div className="text-sm font-semibold text-slate-800">Split PDF</div>
+              </a>
+              <a href="#" className="flex items-center gap-3 rounded-2xl border bg-white p-3 hover:shadow transition">
+                <div className="h-9 w-9 flex items-center justify-center rounded-lg bg-[#f0fdf4] text-[#166534]"><svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6h18v2H3zM3 11h18v2H3zM3 16h18v2H3z"/></svg></div>
+                <div className="text-sm font-semibold text-slate-800">Compress PDF</div>
+              </a>
             </div>
 
             {!token ? (
@@ -284,7 +401,7 @@ export default function Dashboard() {
                       key={document.id}
                       type="button"
                       onClick={() => setSelectedDocumentId(document.id)}
-                      className={`w-full rounded-[24px] border p-4 text-left transition ${
+                      className={`w-full rounded-2xl border p-4 text-left transition ${
                         isSelected
                           ? 'border-[#e5322d] bg-[#fff5f4] shadow-[0_12px_30px_rgba(229,50,45,0.12)]'
                           : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
@@ -315,7 +432,7 @@ export default function Dashboard() {
             )}
           </section>
 
-          <section className="rounded-[28px] border border-white/70 bg-white/90 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur">
+          <section className="rounded-[28px] border border-white/70 bg-white/90 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur order-1 lg:order-2">
             {isLoadingDocument ? (
               <div className="flex min-h-[640px] animate-pulse flex-col gap-4">
                 <div className="h-16 rounded-3xl bg-slate-100" />
@@ -360,6 +477,28 @@ export default function Dashboard() {
                       >
                         Download
                       </button>
+                      {token ? (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!selectedDocumentId) return;
+                            const confirmDelete = window.confirm(`Delete "${selectedDocument?.originalName || selectedDocument?.original_name}"? This cannot be undone.`);
+                            if (!confirmDelete) return;
+                            try {
+                              await deleteDocument(selectedDocumentId);
+                              const refreshed = await listDocuments();
+                              setDocuments(refreshed);
+                              setSelectedDocumentId(null);
+                            } catch (err) {
+                              console.error('Delete failed', err);
+                              alert(err.message || 'Unable to delete document');
+                            }
+                          }}
+                          className="rounded-full bg-rose-600 text-white px-4 py-2 text-sm font-semibold hover:bg-rose-700 transition"
+                        >
+                          Delete
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -416,31 +555,57 @@ export default function Dashboard() {
                   ref={previewPanelRef}
                   className="flex min-h-[720px] items-start justify-center overflow-auto rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] p-4"
                 >
-                  <Document
-                    file={{
-                      url: selectedDocument.previewUrl,
-                      httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
-                    }}
-                    loading={
-                      <div className="rounded-3xl bg-white px-6 py-4 text-sm font-medium text-slate-500 shadow">
-                        Loading PDF preview...
+                  <div className="relative">
+                    <div className="mb-3 flex justify-end">
+                      <button
+                        onClick={() => setPlacingSignature((s) => !s)}
+                        className={`px-3 py-1.5 rounded font-semibold border ${placingSignature ? 'bg-[#e5322d] text-white border-[#e5322d]' : 'bg-white text-slate-700'}`}
+                      >
+                        {placingSignature ? 'Click on document to place' : 'Place signature'}
+                      </button>
+                    </div>
+                    <div ref={pageWrapperRef} onClick={handlePlaceClick} style={{ cursor: placingSignature ? 'crosshair' : 'default' }}>
+                    <Document
+                      file={
+                        previewData || selectedDocument.previewData || {
+                          url: selectedDocument.previewUrl,
+                          httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+                        }
+                      }
+                      loading={
+                        <div className="rounded-3xl bg-white px-6 py-4 text-sm font-medium text-slate-500 shadow">
+                          Loading PDF preview...
+                        </div>
+                      }
+                      onLoadSuccess={handlePdfLoaded}
+                      onLoadError={(error) => {
+                        console.error('PDF load error', error);
+                        setPreviewError(error?.message || String(error) || 'Unable to render this PDF preview.');
+                      }}
+                      error={undefined}
+                    >
+                      <Page
+                        pageNumber={currentPage}
+                        renderAnnotationLayer
+                        renderTextLayer
+                        scale={previewScale}
+                        width={pageWidth}
+                      />
+
+                      </Document>
+
+                    {signatures.filter(s => s.page_number === currentPage || s.page_number === s.pageNumber).map((sig) => (
+                      <div
+                        key={sig.id}
+                        title={`${sig.status} — ${sig.signer_id || 'unassigned'}`}
+                        className="absolute -translate-x-1/2 -translate-y-1/2 bg-white/90 border border-dashed border-slate-300 px-2 py-1 rounded text-xs font-semibold text-slate-700 shadow"
+                        style={{ left: `${sig.x}%`, top: `${sig.y}%`, pointerEvents: 'auto' }}
+                      >
+                        {sig.status === 'pending' ? 'Signature' : 'Signed'}
                       </div>
-                    }
-                    onLoadSuccess={handlePdfLoaded}
-                    onLoadError={(error) => {
-                      console.error(error);
-                      setPreviewError('Unable to render this PDF preview.');
-                    }}
-                    error=""
-                  >
-                    <Page
-                      pageNumber={currentPage}
-                      renderAnnotationLayer
-                      renderTextLayer
-                      scale={previewScale}
-                      width={pageWidth}
-                    />
-                  </Document>
+                    ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

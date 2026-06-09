@@ -28,6 +28,18 @@ export const initDb = async () => {
         const schema = fs.readFileSync(schemaPath, 'utf-8');
         
         await pool.query(schema);
+        
+        // Ensure file_data column exists (Migration)
+        await pool.query(`
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='file_data') THEN
+                    ALTER TABLE documents ADD COLUMN file_data BYTEA;
+                    ALTER TABLE documents ALTER COLUMN file_path DROP NOT NULL;
+                END IF;
+            END $$;
+        `);
+        
         console.log('Database tables initialized from schema.sql');
     } catch (error) {
         console.error('Error initializing database tables:', error);

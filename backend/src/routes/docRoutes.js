@@ -4,18 +4,34 @@ import {
     getDocuments,
     getDocumentById,
     streamDocument,
+    deleteDocument,
+    addSignature,
+    getSignatures,
+    generateSignatureToken,
+    validateSignatureToken,
+    signWithToken,
 } from '../controllers/docController.js';
-import { authenticateToken } from '../middlewares/authMiddleware.js';
+import { authenticateToken, optionalAuthenticateToken } from '../middlewares/authMiddleware.js';
 import { upload } from '../middlewares/uploadMiddleware.js';
 
 const router = express.Router();
 
-// Upload a new PDF document
-router.post('/upload', authenticateToken, upload.single('document'), uploadDocument);
+// Public routes (with optional auth for sandbox mode)
+router.post('/upload', optionalAuthenticateToken, upload.single('document'), uploadDocument);
+router.get('/:documentId/file', optionalAuthenticateToken, streamDocument);
 
-// Get list of documents for the authenticated user
+// Signature Public routes (token based)
+router.get('/signatures/validate', validateSignatureToken);
+router.post('/signatures/sign', signWithToken);
+
+// Auth protected routes
 router.get('/', authenticateToken, getDocuments);
-router.get('/:documentId/file', authenticateToken, streamDocument);
 router.get('/:documentId', authenticateToken, getDocumentById);
+router.delete('/:documentId', authenticateToken, deleteDocument);
+
+// Signatures Management (Owner only)
+router.post('/:documentId/signatures', authenticateToken, addSignature);
+router.get('/:documentId/signatures', authenticateToken, getSignatures);
+router.post('/signatures/:signatureId/token', authenticateToken, generateSignatureToken);
 
 export default router;

@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/authRoutes.js';
 import docRoutes from './routes/docRoutes.js';
+import signatureRoutes from './routes/signatureRoutes.js';
 import { initDb } from './db.js';
 
 dotenv.config();
@@ -11,11 +12,17 @@ dotenv.config();
 initDb();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    exposedHeaders: ['Content-Disposition']
+}));
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
 app.use('/api/docs', docRoutes);
+app.use('/api/signatures', signatureRoutes);
 
 app.get('/api/health', (req, res) => {
     res.json({ message: 'API is healthy' });
