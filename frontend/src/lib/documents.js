@@ -39,14 +39,37 @@ export const getSignatures = async (documentId) => {
   return data.signatures || [];
 };
 
-export const createSignature = async (documentId, { pageNumber = 1, x, y, signerId = null }) => {
+export const createSignature = async (documentId, { pageNumber = 1, x, y, signerId = null, type = 'signature', metadata = null }) => {
   const data = await request(`/api/docs/${documentId}/signatures`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pageNumber, x, y, signerId }),
+    body: JSON.stringify({ pageNumber, x, y, signerId, type, metadata }),
   });
 
   return data.signature;
+};
+
+export const deleteSignature = async (documentId, signatureId) => {
+  const data = await request(`/api/docs/${documentId}/signatures/${signatureId}`, {
+    method: 'DELETE',
+  });
+  return data;
+};
+
+export const updateSignatureCoords = async (documentId, signatureId, { pageNumber, x, y, metadata }) => {
+  const data = await request(`/api/docs/${documentId}/signatures/${signatureId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pageNumber, x, y, ...(metadata !== undefined ? { metadata } : {}) }),
+  });
+  return data.signature;
+};
+
+export const generateSignatureToken = async (signatureId) => {
+  const data = await request(`/api/docs/signatures/${signatureId}/token`, {
+    method: 'POST',
+  });
+  return data.token;
 };
 
 export const uploadDocument = async (file) => {
@@ -96,7 +119,7 @@ export const getDocumentDownloadUrl = (documentId) => `${backendBase}/api/docs/$
 export { backendBase };
 
 export const validateSignatureToken = async (token) => {
-  const response = await fetch(`${backendBase}/api/signatures/validate?token=${encodeURIComponent(token)}`);
+  const response = await fetch(`${backendBase}/api/docs/signatures/validate?token=${encodeURIComponent(token)}`);
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.error || 'Invalid token');
@@ -105,11 +128,11 @@ export const validateSignatureToken = async (token) => {
   return response.json();
 };
 
-export const signWithToken = async (token, { signerName, signatureText } = {}) => {
-  const body = { signerName, signatureText };
+export const signWithToken = async (token, { signerName, signatureText, signatureImage } = {}) => {
+  const body = { token, signerName, signatureText, signatureImage };
 
-  const response = await fetch(`${backendBase}/api/signatures/sign?token=${encodeURIComponent(token)}`, {
-    method: 'PUT',
+  const response = await fetch(`${backendBase}/api/docs/signatures/sign`, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });

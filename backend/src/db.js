@@ -37,6 +37,15 @@ export const initDb = async () => {
                     ALTER TABLE documents ADD COLUMN file_data BYTEA;
                     ALTER TABLE documents ALTER COLUMN file_path DROP NOT NULL;
                 END IF;
+                
+                -- Ensure type and metadata columns exist in signatures table
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='signatures' AND column_name='type') THEN
+                    ALTER TABLE signatures ADD COLUMN type VARCHAR(50) DEFAULT 'signature';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='signatures' AND column_name='metadata') THEN
+                    ALTER TABLE signatures ADD COLUMN metadata JSONB;
+                END IF;
             END $$;
         `);
         
