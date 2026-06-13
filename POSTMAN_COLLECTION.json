@@ -1,0 +1,318 @@
+{
+  "info": {
+    "name": "DocSign WebApp API",
+    "_postman_id": "docsign-api-collection-v1",
+    "description": "Complete API collection for the DocSign WebApp. Set the `base_url` environment variable to `http://localhost:5000` and `token` / `sig_token` will be set automatically by test scripts.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5000", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "doc_id", "value": "", "type": "string" },
+    { "key": "sig_id", "value": "", "type": "string" },
+    { "key": "sig_token", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Healthy', () => pm.expect(pm.response.json().message).to.include('healthy'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/auth/register",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Test User\",\"email\":\"test@example.com\",\"password\":\"Password123\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "if (json.token) pm.collectionVariables.set('token', json.token);",
+                  "pm.test('Has token', () => pm.expect(json.token).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"test@example.com\",\"password\":\"Password123\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "if (json.token) pm.collectionVariables.set('token', json.token);",
+                  "pm.test('Has token', () => pm.expect(json.token).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "item": [
+        {
+          "name": "Upload PDF",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/docs/upload",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "document", "type": "file", "src": "" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.document && json.document.id) pm.collectionVariables.set('doc_id', json.document.id);",
+                  "pm.test('Has document id', () => pm.expect(json.document).to.have.property('id'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Documents",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/docs",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has documents array', () => pm.expect(pm.response.json().documents).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Document by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/docs/{{doc_id}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "Stream PDF (Preview)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/docs/{{doc_id}}/file",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "Download PDF",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/docs/{{doc_id}}/file?download=1",
+              "query": [{ "key": "download", "value": "1" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "Delete Document",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/docs/{{doc_id}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Deleted message', () => pm.expect(pm.response.json().message).to.include('deleted'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Signatures",
+      "item": [
+        {
+          "name": "Add Signature Placeholder",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/docs/{{doc_id}}/signatures",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"pageNumber\":1,\"x\":50,\"y\":80}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "if (json.signature && json.signature.id) pm.collectionVariables.set('sig_id', json.signature.id);",
+                  "pm.test('Has signature id', () => pm.expect(json.signature).to.have.property('id'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Signatures for Document",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/docs/{{doc_id}}/signatures",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "Delete Signature Placeholder",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/docs/{{doc_id}}/signatures/{{sig_id}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "Generate Share Token",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/docs/signatures/{{sig_id}}/token",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "if (json.token) pm.collectionVariables.set('sig_token', json.token);",
+                  "pm.test('Has token', () => pm.expect(json.token).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Public Signing",
+      "item": [
+        {
+          "name": "Validate Signature Token",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/docs/signatures/validate?token={{sig_token}}",
+              "query": [{ "key": "token", "value": "{{sig_token}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has signature', () => pm.expect(pm.response.json().signature).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sign with Token (Text)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/docs/signatures/sign",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\":\"{{sig_token}}\",\"signerName\":\"John Doe\",\"signatureText\":\"Approved\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Signed successfully', () => pm.expect(pm.response.json().message).to.include('signed'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

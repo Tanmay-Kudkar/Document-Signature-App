@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, CheckCircle, ArrowRight } from 'lucide-react';
 import { getStoredToken, loginUser } from '../lib/auth';
+import NeonSweepButton from '../components/NeonSweepButton';
 
 const Login = () => {
   const navigate = useNavigate();
@@ -143,14 +144,15 @@ const Login = () => {
               </div>
             ) : null}
 
-            <button
+            <NeonSweepButton
               type="submit"
               disabled={isSubmitting}
-              className="w-full bg-[#e5322d] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#cc2b26] transition-all shadow-lg shadow-red-100 flex items-center justify-center gap-2 group transform active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70"
+              tone="danger"
+              className="w-full py-4 text-lg shadow-lg shadow-red-100 flex items-center justify-center gap-2 group/btn transform active:scale-[0.98]"
             >
               {isSubmitting ? 'Signing In...' : 'Sign In'}
-              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-            </button>
+              <ArrowRight className="w-5 h-5 group-hover/btn:translate-x-1 transition-transform" />
+            </NeonSweepButton>
           </form>
 
           <div className="mt-10 text-center animate-slide-up delay-300 fill-mode-forwards opacity-0 pt-6 border-t border-gray-100">

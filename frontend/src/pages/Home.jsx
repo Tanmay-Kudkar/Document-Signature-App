@@ -1,71 +1,655 @@
-import { useOutletContext } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { useOutletContext, Link } from 'react-router-dom';
+import NeonSweepButton from '../components/NeonSweepButton';
 
 export default function Home() {
-  const { fileInputRef, selectedFile, isUploading, handleTriggerUpload, handleUploadAndNavigate, clearSelected } = useOutletContext();
+  const {
+    fileInputRef,
+    selectedFile,
+    setSelectedFile,
+    isUploading,
+    handleTriggerUpload,
+    handleUploadAndNavigate,
+    clearSelected,
+  } = useOutletContext();
+
+  const [isDragging, setIsDragging] = useState(false);
+  const [urlModalMode, setUrlModalMode] = useState(null); // 'cloud' | 'url' | null
+  const [urlInput, setUrlInput] = useState('');
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
+  const [urlError, setUrlError] = useState('');
+
+  const [showSigConfig, setShowSigConfig] = useState(false);
+  const [modalTab, setModalTab] = useState('type'); // type | draw | upload
+  const [sigConfig, setSigConfig] = useState({
+    name: '',
+    initials: '',
+    font: 'greatvibes',
+    color: '#1a1a1a',
+    drawingImage: null
+  });
+  const [userEditedInitials, setUserEditedInitials] = useState(false);
+
+  // Drawing refs
+  const drawingRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const lastPosRef = useRef(null);
+
+  const SIG_FONTS = [
+    { id: 'greatvibes',  label: 'Great Vibes',   cls: 'font-greatvibes',  size: 32 },
+    { id: 'dancing',     label: 'Dancing Script', cls: 'font-dancing',     size: 28 },
+    { id: 'sacramento',  label: 'Sacramento',     cls: 'font-sacramento',  size: 32 },
+    { id: 'pacifico',    label: 'Pacifico',       cls: 'font-pacifico',    size: 22 },
+    { id: 'pinyon',      label: 'Pinyon Script',  cls: 'font-pinyon',      size: 30 },
+  ];
+
+  useEffect(() => {
+    if (!userEditedInitials) {
+      const parts = sigConfig.name.trim().split(/\s+/).filter(Boolean);
+      setSigConfig(prev => ({ ...prev, initials: parts.map(p => p[0]).join('').toUpperCase().slice(0, 4) }));
+    }
+  }, [sigConfig.name, userEditedInitials]);
+
+  const PRESET_COLORS = [
+    { color: '#1a1a1a', label: 'Black' },
+    { color: '#e8222c', label: 'Red' },
+    { color: '#2563eb', label: 'Blue' },
+    { color: '#16a34a', label: 'Green' },
+  ];
+
+  // Canvas drawing helpers
+  const getCanvasPos = (canvas, e) => {
+    const rect = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+  };
+  const startDraw = (e) => {
+    e.preventDefault();
+    setIsDrawing(true);
+    const pos = getCanvasPos(drawingRef.current, e);
+    lastPosRef.current = pos;
+  };
+  const doDraw = (e) => {
+    e.preventDefault();
+    if (!isDrawing || !drawingRef.current) return;
+    const ctx = drawingRef.current.getContext('2d');
+    const pos = getCanvasPos(drawingRef.current, e);
+    ctx.strokeStyle = sigConfig.color;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastPosRef.current.x, lastPosRef.current.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    lastPosRef.current = pos;
+  };
+  const endDraw = () => setIsDrawing(false);
+  const clearCanvas = () => {
+    if (!drawingRef.current) return;
+    const ctx = drawingRef.current.getContext('2d');
+    ctx.clearRect(0, 0, drawingRef.current.width, drawingRef.current.height);
+  };
+
+  const handleOnlyMeClick = () => {
+    localStorage.setItem('signingMode', 'only_me');
+    setShowSigConfig(true);
+  };
+
+  const handleConfirmSigConfig = () => {
+    // Capture drawing if on draw tab
+    let finalConfig = { ...sigConfig };
+    if (modalTab === 'draw' && drawingRef.current) {
+      finalConfig.drawingImage = drawingRef.current.toDataURL('image/png');
+    }
+    // Save to localStorage
+    localStorage.setItem('signatureConfig', JSON.stringify(finalConfig));
+    setShowSigConfig(false);
+    handleUploadAndNavigate();
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+  
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (file.type === "application/pdf") {
+        setSelectedFile(file);
+      } else {
+        alert("Please drop a valid PDF file.");
+      }
+    }
+  };
+
+  const handleUrlSubmit = async () => {
+    if (!urlInput.trim()) return;
+    setIsFetchingUrl(true);
+    setUrlError('');
+    try {
+      const response = await fetch(urlInput.trim());
+      if (!response.ok) throw new Error("Failed to fetch");
+      const blob = await response.blob();
+      const file = new File([blob], "document.pdf", { type: "application/pdf" });
+      setSelectedFile(file);
+      setUrlModalMode(null);
+      setUrlInput('');
+    } catch (e) {
+      setUrlError("Could not fetch the PDF. Please ensure the URL is valid, direct, and CORS is allowed.");
+    } finally {
+      setIsFetchingUrl(false);
+    }
+  };
 
   return (
-    <main className="flex-1 flex flex-col items-center justify-center px-4 py-8 md:py-24 max-w-7xl mx-auto w-full">
-      {selectedFile ? (
-        <div className="w-full max-w-4xl bg-white shadow-xl rounded-2xl p-6 sm:p-10 md:p-14 text-center border overflow-hidden">
-          <h2 className="text-2xl md:text-3xl font-bold text-slate-900 mb-8 md:mb-12 px-2">Who will sign this document?</h2>
+    <>
+      {/* ── Main upload area ── */}
+      <main
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`flex flex-col items-center justify-center px-4 transition-colors duration-300 ${isDragging ? 'bg-red-50 border-4 border-dashed border-[#e8222c]' : 'bg-[#fff]'}`}
+        style={{ minHeight: 'calc(100vh - 56px)' }}
+      >
+        <h1
+          className="text-center font-bold mb-3"
+          style={{ fontSize: 42, color: '#1a1a1a', letterSpacing: -1, lineHeight: 1.15 }}
+        >
+          Sign PDF
+        </h1>
+        <p
+          className="text-center mb-10 max-w-xl"
+          style={{ fontSize: 18, color: '#4b5563', lineHeight: 1.6 }}
+        >
+          Your tool to eSign documents. Sign a document yourself or send a
+          signature request to others.
+        </p>
 
-          <div className="flex flex-col md:flex-row gap-4 md:gap-6 justify-center items-stretch mb-8 md:mb-10 w-full max-w-3xl mx-auto">
-            <div className="flex-1 bg-slate-50 rounded-xl p-6 sm:p-8 flex flex-col items-center transition-all hover:shadow-md cursor-pointer border border-transparent hover:border-red-100 min-w-0 max-w-full">
-              <div className="h-30 w-30 md:h-40 md:w-40 bg-[#dbe8f6] rounded-2xl flex items-center justify-center mb-6 md:mb-8 shrink-0">
-                <svg className="w-12 h-12 md:w-20 md:h-20 text-[#4a90e2]" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-                </svg>
-              </div>
+        {/* Upload button row */}
+        <div className="flex items-center gap-3">
+          <NeonSweepButton
+            onClick={handleTriggerUpload}
+            tone="danger"
+            size="lg"
+            className="shadow-md hover:shadow-lg"
+          >
+            Select PDF file
+          </NeonSweepButton>
 
-              <button className="bg-[#e5322d] text-white text-base md:text-[17px] font-bold py-2.5 md:py-3 px-6 md:px-8 rounded-lg mb-2 md:mb-3 hover:bg-[#cc2b26] transition w-full md:w-[85%] truncate" onClick={handleUploadAndNavigate} disabled={isUploading}>
-                {isUploading ? 'Uploading...' : 'Only me'}
-              </button>
-              <p className="text-sm md:text-[15px] text-slate-600">Sign this document</p>
-            </div>
+          {/* Cloud upload icon */}
+          <button
+            onClick={() => setUrlModalMode('cloud')}
+            title="Upload from Google Drive"
+            className="flex items-center justify-center rounded-lg hover:opacity-80 transition bg-white border border-gray-200 shadow-sm"
+            style={{ width: 46, height: 46, flexShrink: 0 }}
+          >
+            <img src="/Google_Drive_icon.svg" alt="Google Drive" className="w-6 h-6" />
+          </button>
 
-            <div className="flex-1 bg-slate-50 rounded-xl p-6 sm:p-8 flex flex-col items-center transition-all hover:shadow-md cursor-pointer border border-transparent hover:border-green-100 min-w-0 max-w-full">
-              <div className="h-30 w-30 md:h-40 md:w-40 bg-green-100 rounded-full flex items-center justify-center mb-6 md:mb-8 shrink-0">
-                <svg className="w-16 h-16 md:w-28 md:h-28 text-[#50e3c2]" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
-                </svg>
-              </div>
-
-              <button className="bg-[#e5322d] text-white text-base md:text-[17px] font-bold py-2.5 md:py-3 px-6 md:px-8 rounded-lg mb-2 md:mb-3 hover:bg-[#cc2b26] transition w-full md:w-[85%] truncate" onClick={handleUploadAndNavigate} disabled={isUploading}>
-                {isUploading ? 'Uploading...' : 'Several people'}
-              </button>
-              <p className="text-sm md:text-[15px] text-slate-600">Invite others to sign</p>
-            </div>
-          </div>
-
-          <div className="flex flex-col items-center gap-3 mt-4">
-            <p className="text-sm md:text-[14.5px] text-slate-900 font-medium mb-1 break-all px-4">Uploaded documents: <span className="font-bold">{selectedFile?.name}</span></p>
-            <button onClick={clearSelected} className="flex items-center justify-center rounded-lg font-bold text-sm md:text-[14.5px] text-[#cc2b26] bg-[#fdf2f2] hover:bg-[#fce8e8] px-4 md:px-6 py-2 md:py-2.5 transition w-full sm:w-max">Cancel and select a different file</button>
-          </div>
+          {/* URL / link icon */}
+          <button
+            onClick={() => setUrlModalMode('url')}
+            title="Upload from URL"
+            className="flex items-center justify-center rounded-lg hover:opacity-80 transition"
+            style={{ background: '#e8222c', width: 46, height: 46, flexShrink: 0 }}
+          >
+            <img src="/link_icon.svg" alt="Link" className="w-6 h-6" style={{ filter: 'invert(1)' }} />
+          </button>
         </div>
-      ) : (
-        <div className="w-full flex flex-col items-center">
-          <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-slate-900 mb-4 text-center px-4 leading-tight">Sign PDF</h1>
-          <p className="text-base sm:text-lg md:text-[22px] text-slate-700 mb-8 md:mb-10 text-center max-w-2xl leading-relaxed px-4">Your tool to eSign documents. Sign a document yourself or send a signature request to others.</p>
 
-          <div className="flex flex-col items-center w-full max-w-md px-4">
-            <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-3 w-full justify-center">
-              <button onClick={handleTriggerUpload} className="bg-[#e5322d] hover:bg-[#cc2b26] text-white text-xl sm:text-2xl md:text-[28px] font-bold px-8 sm:px-12 py-4 md:py-5 rounded-lg shadow-lg flex items-center justify-center transition-all hover:scale-105 duration-300 w-full sm:min-w-[280px]">Select PDF file</button>
-              <div className="flex flex-row sm:flex-col gap-3 sm:gap-2">
-                <button className="w-12 h-12 sm:w-10 sm:h-10 bg-[#e5322d] hover:bg-[#cc2b26] text-white rounded-full flex items-center justify-center shadow-md transition-transform hover:scale-110">
-                  <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4C9.11 4 6.6 5.64 5.35 8.04C2.34 8.36 0 10.91 0 14C0 17.31 2.69 20 6 20H19C21.76 20 24 17.76 24 15C24 12.36 21.95 10.22 19.35 10.04ZM14 13V17H10V13H7L12 8L17 13H14Z" /></svg>
-                </button>
-                <button className="w-12 h-12 sm:w-10 sm:h-10 bg-[#e5322d] hover:bg-[#cc2b26] text-white rounded-full flex items-center justify-center shadow-md transition-transform hover:scale-110">
-                  <svg className="w-5 h-5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M2.5 12C2.5 7.5 6 4 10.5 4C13.2 4 15.6 5.3 17 7.4L13.8 9.2C13 8.3 11.8 7.7 10.5 7.7C8.1 7.7 6.2 9.6 6.2 12C6.2 14.4 8.1 16.3 10.5 16.3C11.8 16.3 13 15.7 13.8 14.8L17 16.6C15.6 18.7 13.2 20 10.5 20C6 20 2.5 16.5 2.5 12ZM21.5 12L17.5 8V11H12.5V13H17.5V16L21.5 12Z" /></svg>
-                </button>
+        <p className="mt-5 text-sm text-gray-400 font-semibold pointer-events-none">or drop PDF here</p>
+      </main>
+
+      {/* ── URL Upload Modal ── */}
+      {urlModalMode && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.28)' }} onClick={() => setUrlModalMode(null)} />
+          <div className="relative w-full bg-white rounded-xl animate-fade-in" style={{ maxWidth: 400, boxShadow: '0 4px 20px rgba(0,0,0,0.10)', border: '1px solid #e5e7eb' }}>
+            <div className="flex items-center gap-3 px-5 pt-5 pb-4">
+              <div className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 32, height: 32, background: '#f3f4f6' }}>
+                {urlModalMode === 'cloud' ? (
+                  <img src="/Google_Drive_icon.svg" alt="Google Drive" className="w-5 h-5" />
+                ) : (
+                  <img src="/link_icon.svg" alt="Link" className="w-5 h-5 opacity-60" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-gray-800 text-sm">
+                  {urlModalMode === 'cloud' ? 'Upload from Cloud' : 'Upload from URL'}
+                </p>
+                <p className="text-xs text-gray-400 truncate mt-0.5">
+                  {urlModalMode === 'cloud' ? 'Enter Google Drive or Dropbox link' : 'Enter a direct link to a PDF file'}
+                </p>
               </div>
             </div>
-            <p className="mt-8 text-sm sm:text-base md:text-[15px] text-slate-700 hidden sm:block">or drop PDF here</p>
+            
+            <div className="px-5 pb-5">
+              {urlError && <p className="text-xs text-red-500 font-medium mb-2">{urlError}</p>}
+              <input type="url" value={urlInput} autoFocus
+                onChange={e => setUrlInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleUrlSubmit()}
+                placeholder={urlModalMode === 'cloud' ? "https://drive.google.com/file/..." : "https://example.com/document.pdf"}
+                className="w-full rounded-lg border px-3 py-2.5 text-sm text-gray-800 outline-none transition mb-3"
+                style={{ borderColor: '#d1d5db', background: '#f9fafb' }}
+                onFocus={e => e.target.style.borderColor = '#9ca3af'}
+                onBlur={e => e.target.style.borderColor = '#d1d5db'}
+              />
+              <div className="flex gap-2">
+                <NeonSweepButton onClick={handleUrlSubmit} disabled={!urlInput.trim() || isFetchingUrl}
+                  tone="danger" size="sm" className="flex-1 font-semibold">
+                  {isFetchingUrl ? 'Fetching...' : 'Upload'}
+                </NeonSweepButton>
+                <NeonSweepButton onClick={() => { setUrlModalMode(null); setUrlInput(''); setUrlError(''); }}
+                  tone="slate" size="sm">
+                  Cancel
+                </NeonSweepButton>
+              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Footer minimal info */}
-      <footer className="py-8 md:py-6 text-center text-xs sm:text-sm font-semibold text-gray-400 mt-auto">&copy; {new Date().getFullYear()} DocSign WebApp</footer>
-    </main>
+      {/* ── "Who will sign?" overlay modal ── */}
+      {selectedFile && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          {/* Blurred backdrop */}
+          <div
+            className="absolute inset-0"
+            style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }}
+          />
+
+          <div
+            className="relative w-full bg-white rounded-2xl overflow-hidden animate-fade-in"
+            style={{ maxWidth: 640, boxShadow: '0 24px 80px rgba(0,0,0,0.18)' }}
+          >
+            {/* Header */}
+            <div className="px-10 pt-10 pb-6">
+              <h2 className="text-center font-bold text-gray-900" style={{ fontSize: 26 }}>
+                Who will sign this document?
+              </h2>
+            </div>
+
+            {/* Two cards */}
+            <div className="flex gap-4 px-8 pb-6">
+              {/* Only me */}
+              <div
+                className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-8 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition group"
+                style={{ background: '#fafafa' }}
+                onClick={handleOnlyMeClick}
+              >
+                {/* Illustration */}
+                <div
+                  className="flex items-center justify-center mb-6 rounded-2xl overflow-hidden"
+                  style={{ width: 140, height: 130, background: '#dce8f5' }}
+                >
+                  <img
+                    src="/signing-illustration.png"
+                    alt="Only me"
+                    className="w-28 h-28 object-contain"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                      e.target.parentNode.innerHTML = `<svg viewBox="0 0 80 80" width="80" height="80" fill="none"><rect width="80" height="80" rx="16" fill="#dce8f5"/><rect x="20" y="12" width="40" height="52" rx="4" fill="white" stroke="#b3cee8" strokeWidth="2"/><line x1="28" y1="24" x2="52" y2="24" stroke="#b3cee8" strokeWidth="2"/><line x1="28" y1="32" x2="52" y2="32" stroke="#b3cee8" strokeWidth="2"/><line x1="28" y1="40" x2="44" y2="40" stroke="#b3cee8" strokeWidth="2"/><path d="M24 56 Q32 48 40 54 Q46 44 54 52" stroke="#4a7fc1" strokeWidth="2.5" fill="none" strokeLinecap="round"/></svg>`;
+                    }}
+                  />
+                </div>
+
+                <NeonSweepButton
+                  disabled={isUploading}
+                  tone="danger"
+                  className="w-4/5 mb-2"
+                >
+                  {isUploading ? 'Uploading...' : 'Only me'}
+                </NeonSweepButton>
+                <p className="text-sm text-gray-500">Sign this document</p>
+              </div>
+
+              {/* Several people */}
+              <div
+                className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-8 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition group"
+                style={{ background: '#fafafa' }}
+                onClick={() => { localStorage.setItem('signingMode', 'several_people'); handleUploadAndNavigate(); }}
+              >
+                <div
+                  className="flex items-center justify-center mb-6 rounded-2xl overflow-hidden"
+                  style={{ width: 140, height: 130, background: '#e8f5f0' }}
+                >
+                  <svg viewBox="0 0 80 80" width="80" height="80" fill="none">
+                    {/* Top person */}
+                    <circle cx="40" cy="12" r="7" fill="#4a7fc1" opacity="0.9" />
+                    <ellipse cx="40" cy="26" rx="10" ry="7" fill="#4a7fc1" opacity="0.9" />
+                    {/* Left person */}
+                    <circle cx="14" cy="36" r="6" fill="#e8702a" opacity="0.9" />
+                    <ellipse cx="14" cy="48" rx="9" ry="6" fill="#e8702a" opacity="0.9" />
+                    {/* Right person */}
+                    <circle cx="66" cy="36" r="6" fill="#50b383" opacity="0.9" />
+                    <ellipse cx="66" cy="48" rx="9" ry="6" fill="#50b383" opacity="0.9" />
+                    {/* Bottom person */}
+                    <circle cx="40" cy="60" r="6" fill="#9b59b6" opacity="0.9" />
+                    <ellipse cx="40" cy="72" rx="9" ry="6" fill="#9b59b6" opacity="0.9" />
+                    {/* Table circle */}
+                    <circle cx="40" cy="40" r="16" fill="#d4ebe2" opacity="0.6" />
+                    {/* Document on table */}
+                    <rect x="34" y="33" width="12" height="14" rx="1.5" fill="white" stroke="#b8d4c8" strokeWidth="1" />
+                    <line x1="37" y1="37" x2="43" y2="37" stroke="#b8d4c8" strokeWidth="1" />
+                    <line x1="37" y1="40" x2="43" y2="40" stroke="#b8d4c8" strokeWidth="1" />
+                    <line x1="37" y1="43" x2="41" y2="43" stroke="#b8d4c8" strokeWidth="1" />
+                  </svg>
+                </div>
+
+                <NeonSweepButton
+                  disabled={isUploading}
+                  tone="danger"
+                  className="w-4/5 mb-2"
+                >
+                  {isUploading ? 'Uploading...' : 'Several people'}
+                </NeonSweepButton>
+                <p className="text-sm text-gray-500">Invite others to sign</p>
+              </div>
+            </div>
+
+            {/* Footer: file name */}
+            <div className="border-t border-gray-100 px-10 py-4 text-center">
+              <p className="text-sm text-gray-600">
+                Uploaded documents:{' '}
+                <span className="font-bold text-gray-900">{selectedFile?.name}</span>
+              </p>
+              <NeonSweepButton
+                onClick={clearSelected}
+                tone="slate"
+                size="sm"
+                className="mt-3"
+              >
+                Cancel and select a different file
+              </NeonSweepButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Signature Config Modal ── */}
+      {showSigConfig && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0"
+            style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }}
+            onClick={() => setShowSigConfig(false)}
+          />
+
+          <div
+            className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
+            style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-8 pt-7 pb-5 shrink-0">
+              <h2 className="font-bold text-gray-900" style={{ fontSize: 24 }}>Set your signature details</h2>
+              <Link
+                to="/login"
+                className="text-sm font-bold text-[#e8222c] border-2 border-[#e8222c] px-4 py-1.5 rounded-lg hover:bg-red-50 transition"
+              >
+                Login
+              </Link>
+            </div>
+
+            {/* Name + Initials + Avatar row */}
+            <div className="flex items-start gap-4 px-8 pb-5 shrink-0">
+              {/* Avatar circle */}
+              <div
+                className="shrink-0 flex items-center justify-center rounded-full mt-5"
+                style={{ width: 44, height: 44, border: '2px solid #e8222c' }}
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="#e8222c" opacity="0.6">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+              </div>
+
+              {/* Full name */}
+              <div className="flex-1 min-w-0">
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full name:</label>
+                <input
+                  value={sigConfig.name}
+                  onChange={e => setSigConfig({ ...sigConfig, name: e.target.value })}
+                  placeholder="Your name"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-800 outline-none transition"
+                  style={{ background: '#f9fafb' }}
+                  onFocus={e => e.target.style.borderColor = '#e8222c'}
+                  onBlur={e => e.target.style.borderColor = '#d1d5db'}
+                />
+              </div>
+
+              {/* Initials */}
+              <div className="shrink-0" style={{ width: 160 }}>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Initials:</label>
+                <input
+                  value={sigConfig.initials}
+                  onChange={e => {
+                    setUserEditedInitials(true);
+                    setSigConfig({ ...sigConfig, initials: e.target.value.toUpperCase() });
+                  }}
+                  placeholder="Your initials"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-bold text-gray-800 uppercase outline-none transition"
+                  style={{ background: '#f9fafb' }}
+                  onFocus={e => e.target.style.borderColor = '#e8222c'}
+                  onBlur={e => e.target.style.borderColor = '#d1d5db'}
+                />
+              </div>
+            </div>
+
+            {/* ── Tabs: Signature | Initials | Company Stamp ── */}
+            <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
+              {[
+                { id: 'type', label: 'Signature', icon: (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                )},
+                { id: 'initials_tab', label: 'Initials', icon: (
+                  <span className="font-bold" style={{ fontSize: 12 }}>AC</span>
+                )},
+                { id: 'stamp', label: 'Company Stamp', icon: (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+                )},
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setModalTab(tab.id)}
+                  className="flex items-center gap-2 px-5 py-3 font-semibold text-sm transition border-b-2"
+                  style={{
+                    borderBottomColor: modalTab === tab.id ? '#e8222c' : 'transparent',
+                    color: modalTab === tab.id ? '#1a1a1a' : '#9ca3af',
+                    marginBottom: -1,
+                  }}
+                >
+                  <span style={{ color: modalTab === tab.id ? '#4a7fc1' : '#9ca3af' }}>{tab.icon}</span>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* ── Tab content area ── */}
+            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 320 }}>
+
+              {/* Left icon strip (Type/Draw/Upload sub-tabs) — only for Signature tab */}
+              {(modalTab === 'type' || modalTab === 'initials_tab') && (
+                <div
+                  className="shrink-0 flex flex-col items-center gap-2 border-r border-gray-100 pt-4 px-3"
+                  style={{ width: 56, background: '#fafafa' }}
+                >
+                  {/* Type icon */}
+                  <button
+                    onClick={() => setModalTab('type')}
+                    title="Type"
+                    className="flex items-center justify-center w-9 h-9 rounded-lg transition"
+                    style={{ background: modalTab === 'type' ? '#fff' : 'transparent', border: modalTab === 'type' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z"/></svg>
+                  </button>
+                  {/* Draw icon */}
+                  <button
+                    onClick={() => setModalTab('draw')}
+                    title="Draw"
+                    className="flex items-center justify-center w-9 h-9 rounded-lg transition"
+                    style={{ background: modalTab === 'draw' ? '#fff' : 'transparent', border: modalTab === 'draw' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                  </button>
+                  {/* Upload icon */}
+                  <button
+                    onClick={() => setModalTab('upload')}
+                    title="Upload"
+                    className="flex items-center justify-center w-9 h-9 rounded-lg transition"
+                    style={{ background: modalTab === 'upload' ? '#fff' : 'transparent', border: modalTab === 'upload' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                  </button>
+                </div>
+              )}
+
+              {/* ── Type tab: font-style radio list ── */}
+              {modalTab === 'type' && (
+                <div className="flex-1 overflow-y-auto sig-font-list" style={{ padding: '12px 16px' }}>
+                  <div className="border border-gray-200 rounded-lg overflow-hidden">
+                    {SIG_FONTS.map((font, idx) => (
+                      <label
+                        key={font.id}
+                        className="flex items-center gap-4 px-4 py-3 cursor-pointer transition"
+                        style={{
+                          background: sigConfig.font === font.id ? '#f0f9f0' : '#fff',
+                          borderBottom: idx < SIG_FONTS.length - 1 ? '1px solid #f0f0f0' : 'none',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="sigFont"
+                          value={font.id}
+                          checked={sigConfig.font === font.id}
+                          onChange={() => setSigConfig({ ...sigConfig, font: font.id })}
+                          className="w-4 h-4 accent-green-500 shrink-0"
+                        />
+                        <span className={`flex-1 min-w-0 truncate ${font.cls}`} style={{ fontSize: font.size, color: sigConfig.color || '#1a1a1a', lineHeight: 1.1 }}>
+                          {sigConfig.name || 'Signature'}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Draw tab ── */}
+              {modalTab === 'draw' && (
+                <div className="flex-1 flex flex-col p-4 gap-3">
+                  <div className="relative w-full rounded-xl border-2 border-gray-200 bg-gray-50 overflow-hidden flex-1"
+                    style={{ minHeight: 180 }}>
+                    <canvas
+                      ref={drawingRef}
+                      width={580}
+                      height={200}
+                      className="w-full h-full touch-none"
+                      style={{ cursor: 'crosshair' }}
+                      onMouseDown={startDraw}
+                      onMouseMove={doDraw}
+                      onMouseUp={endDraw}
+                      onMouseLeave={endDraw}
+                      onTouchStart={startDraw}
+                      onTouchMove={doDraw}
+                      onTouchEnd={endDraw}
+                    />
+                    {/* placeholder hint */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                      style={{ opacity: 0.35 }}>
+                      <span className="text-sm text-gray-400 font-medium select-none">Draw your signature here</span>
+                    </div>
+                  </div>
+                  <button onClick={clearCanvas}
+                    className="self-start text-xs font-semibold text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition hover:border-red-200">
+                    Clear
+                  </button>
+                </div>
+              )}
+
+              {/* ── Upload tab ── */}
+              {modalTab === 'upload' && (
+                <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
+                  <div className="text-center">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" opacity="0.3" className="mx-auto mb-2">
+                      <path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/>
+                    </svg>
+                    <p className="text-sm">Upload signature coming soon</p>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Initials tab / Company Stamp tab ── */}
+              {(modalTab === 'initials_tab' || modalTab === 'stamp') && (
+                <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
+                  <div className="text-center">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" opacity="0.3" className="mx-auto mb-2">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                    </svg>
+                    <p className="text-sm">Coming soon</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Color picker row ── */}
+            {(modalTab === 'type' || modalTab === 'draw' || modalTab === 'initials_tab') && (
+              <div className="flex items-center gap-3 px-8 py-3 border-t border-gray-100">
+                <span className="text-xs font-semibold text-gray-500">Color:</span>
+                {PRESET_COLORS.map(p => (
+                  <button key={p.color}
+                    onClick={() => setSigConfig({ ...sigConfig, color: p.color })}
+                    className="w-7 h-7 rounded-full border-2 transition flex items-center justify-center"
+                    style={{
+                      background: p.color,
+                      borderColor: sigConfig.color === p.color ? '#94a3b8' : 'transparent',
+                      boxShadow: sigConfig.color === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none',
+                    }}
+                    title={p.label}
+                  />
+                ))}
+                {/* Color wheel / custom picker */}
+                <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center"
+                  style={{
+                    background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                    borderColor: !PRESET_COLORS.find(p => p.color === sigConfig.color) ? '#94a3b8' : '#e5e7eb',
+                    boxShadow: !PRESET_COLORS.find(p => p.color === sigConfig.color) ? `0 0 0 2px white, 0 0 0 4px ${sigConfig.color}` : 'none',
+                  }}
+                  title="Custom color">
+                  <input type="color" value={sigConfig.color}
+                    onChange={e => setSigConfig({ ...sigConfig, color: e.target.value })}
+                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* Modal footer */}
+            <div className="shrink-0 flex items-center justify-end gap-3 px-8 py-4 border-t border-gray-100">
+              <button
+                onClick={() => setShowSigConfig(false)}
+                className="px-5 py-2.5 rounded-lg font-semibold text-gray-600 hover:bg-gray-100 transition text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmSigConfig}
+                disabled={!sigConfig.name.trim() || isUploading}
+                className="text-white font-bold px-8 py-2.5 rounded-lg transition hover:opacity-90 text-sm disabled:opacity-50"
+                style={{ background: '#e8222c' }}
+              >
+                {isUploading ? 'Uploading...' : 'Apply'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
