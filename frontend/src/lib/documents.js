@@ -128,8 +128,8 @@ export const validateSignatureToken = async (token) => {
   return response.json();
 };
 
-export const signWithToken = async (token, { signerName, signatureText, signatureImage } = {}) => {
-  const body = { token, signerName, signatureText, signatureImage };
+export const signWithToken = async (token, payload = {}) => {
+  const body = { token, ...payload };
 
   const response = await fetch(`${backendBase}/api/docs/signatures/sign`, {
     method: 'POST',

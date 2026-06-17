@@ -15,6 +15,7 @@ import {
   deleteDocument,
   updateSignatureCoords,
 } from '../lib/documents';
+import { loadPreferences, savePreferences } from '../lib/preferences';
 
 /* ── helpers ── */
 const DragHandle = () => (
@@ -33,6 +34,65 @@ const XIcon = () => (
     <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
   </svg>
 );
+
+const StampIcon = ({ color = '#6529f1ff', size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 22h14" />
+    <path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11a2.5 2.5 0 0 0-1.77.73L3 15.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2.5z" />
+    <path d="M12 13V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v9" />
+    <path d="M18 13V8.5a2 2 0 0 0-2-2h-4v6.5" />
+  </svg>
+);
+
+const fieldDefinitions = [
+  { type: 'signature',   label: 'Signature',     color: '#E85D75', bg: '#FFF5F6' },
+  { type: 'initials',   label: 'Initials',      color: '#F4A261', bg: '#FFF9F2' },
+  { type: 'name',       label: 'Name',          color: '#4F8EF7', bg: '#F0F6FF' },
+  { type: 'date',       label: 'Date',          color: '#2BB673', bg: '#F0FAF5' },
+  { type: 'text',       label: 'Text',          color: '#8B5CF6', bg: '#F5F3FF' },
+  { type: 'stamp',      label: 'Company Stamp', color: '#6529f1ff', bg: '#F5F3FF' },
+];
+
+const getFieldIcon = (type, color, size = 16) => {
+  switch (type) {
+    case 'signature':
+    case 'initials':
+      return <PencilIcon color={color} size={size} />;
+    case 'name':
+      return <span className="select-none font-bold" style={{ fontSize: size - 1, color, lineHeight: 1 }}>A</span>;
+    case 'date':
+      return <span className="select-none font-bold" style={{ fontSize: size - 3, color, lineHeight: 1 }}>12</span>;
+    case 'text':
+      return <span className="select-none font-bold" style={{ fontSize: size - 1, color, lineHeight: 1 }}>T</span>;
+    case 'stamp':
+      return (
+        <img
+          src="/stamp.png"
+          alt="Stamp"
+          style={{
+            width: size,
+            height: size,
+            objectFit: 'contain',
+            filter: color === '#ffffff' ? 'brightness(0) invert(1)' : undefined
+          }}
+        />
+      );
+    default:
+      return null;
+  }
+};
+
+const getFieldPreviewText = (type) => {
+  switch (type) {
+    case 'signature': return '✍';
+    case 'initials': return '✎';
+    case 'name': return 'A';
+    case 'date': return '12';
+    case 'text': return 'T';
+    case 'stamp': return '©';
+    default: return '';
+  }
+};
 
 export default function Dashboard() {
   const location = useLocation();
@@ -70,6 +130,7 @@ export default function Dashboard() {
   // Dragging placed fields
   const [draggingFieldId, setDraggingFieldId] = useState(null);
   const dragOffsetRef = useRef({ ox: 0, oy: 0 }); // pixel offset of grab point from field center
+  const wasDraggingRef = useRef(false);
   const [isSigning, setIsSigning] = useState(false);
   const [editingFieldId, setEditingFieldId] = useState(null);
   const [editText, setEditText] = useState('');
@@ -93,7 +154,34 @@ export default function Dashboard() {
 
   // Per-field-type color overrides (double-click sidebar item to change)
   const [fieldColors, setFieldColors] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('fieldColors') || '{}'); } catch { return {}; }
+    try {
+      const stored = JSON.parse(localStorage.getItem('fieldColors') || '{}');
+
+      // One-time migration: wipe stale non-sig colors that may have been set in old sessions
+      if (!localStorage.getItem('fieldColors_v2')) {
+        delete stored.name;
+        delete stored.date;
+        delete stored.text;
+        delete stored.stamp;
+        localStorage.setItem('fieldColors_v2', '1');
+        localStorage.setItem('fieldColors', JSON.stringify(stored));
+      }
+
+      // Sync signature/initials from sigConfig (Home modal) ONLY when the color has changed
+      // (i.e. the user uploaded a new PDF and picked a different color).
+      // If the color is the same as last time, preserve any double-click override the user made.
+      const cfg = JSON.parse(localStorage.getItem('signatureConfig') || '{}');
+      const lastSyncedColor = localStorage.getItem('fieldColors_lastSigColor');
+      if (cfg.color && cfg.color !== lastSyncedColor) {
+        // New color from Home modal — override and remember it
+        stored.signature = cfg.color;
+        stored.initials  = cfg.color;
+        localStorage.setItem('fieldColors_lastSigColor', cfg.color);
+        localStorage.setItem('fieldColors', JSON.stringify(stored));
+      }
+      // If color hasn't changed, keep whatever is in stored (user's own override or last modal color)
+      return stored;
+    } catch { return {}; }
   });
   const colorInputRef = useRef(null);
   const [colorPickingType, setColorPickingType] = useState(null);
@@ -102,7 +190,8 @@ export default function Dashboard() {
     const updated = { ...fieldColors, [type]: color };
     setFieldColors(updated);
     localStorage.setItem('fieldColors', JSON.stringify(updated));
-    setColorPickingType(null);
+    // NOTE: do NOT clear colorPickingType here — it would stop real-time updates
+    // while the user drags the color wheel. It is cleared on input blur instead.
   };
 
   const openColorPicker = (e, type) => {
@@ -148,20 +237,10 @@ export default function Dashboard() {
   const signingMode = localStorage.getItem('signingMode') || 'only_me'; // 'only_me' | 'several_people'
   const isOnlyMe = signingMode === 'only_me';
   
-  // Local signature config
-  const sigConfig = JSON.parse(localStorage.getItem('signatureConfig') || '{"name":"","initials":"","font":"Dancing Script"}');
+  // Local signature config – kept in state so updates trigger re-renders
+  const [sigConfig, setSigConfig] = useState(() => JSON.parse(localStorage.getItem('signatureConfig') || '{"name":"","initials":"","font":"Dancing Script","color":"#1a1a1a"}'));
   
-  // Field type definitions
-  // Icon sizes are computed to fill the 26×26 sidebar icon container (same logic as PDF canvas fields)
-  // availH=22, maxFontH=22*0.72≈16 for sans-serif | 22*0.90≈20 but single-char so width wins
-  const fieldDefinitions = [
-    { type: 'signature',   label: 'Signature',     icon: <PencilIcon color="#e8222c" size={18}/>, color: '#e8222c', bg: '#fef2f2' },
-    { type: 'initials',   label: 'Initials',      icon: <PencilIcon color="#f59e0b" size={18}/>, color: '#f59e0b', bg: '#fffbeb' },
-    { type: 'name',       label: 'Name',          icon: <span style={{fontSize:16, fontWeight:'bold', color:'#3b82f6', lineHeight:1}}>A</span>, color: '#3b82f6', bg: '#eff6ff' },
-    { type: 'date',       label: 'Date',          icon: <span style={{fontSize:14, fontWeight:'bold', color:'#10b981', lineHeight:1}}>12</span>, color: '#10b981', bg: '#ecfdf5' },
-    { type: 'text',       label: 'Text',          icon: <span style={{fontSize:16, fontWeight:'bold', color:'#6366f1', lineHeight:1}}>T</span>, color: '#6366f1', bg: '#eef2ff' },
-    { type: 'stamp',      label: 'Company Stamp', icon: <span style={{fontSize:16, fontWeight:'bold', color:'#8b5cf6', lineHeight:1}}>©</span>, color: '#8b5cf6', bg: '#f5f3ff' },
-  ];
+
 
   /* ── resize observer ── */
   useEffect(() => {
@@ -172,6 +251,65 @@ export default function Dashboard() {
     obs.observe(pdfWrapperRef.current);
     return () => obs.disconnect();
   }, []);
+
+  /* ── load preferences from server on mount ── */
+  useEffect(() => {
+    if (!token) return;
+    loadPreferences().then(prefs => {
+      if (!prefs) return;
+      // Restore sig_config into localStorage (used by sigConfig state)
+      if (prefs.sig_config) {
+        localStorage.setItem('signatureConfig', JSON.stringify(prefs.sig_config));
+      }
+      // Restore field_colors, then apply same sigConfig sync logic
+      if (prefs.field_colors) {
+        const cfg = prefs.sig_config || {};
+        const merged = { ...prefs.field_colors };
+        const lastSynced = localStorage.getItem('fieldColors_lastSigColor');
+        if (cfg.color && cfg.color !== lastSynced) {
+          merged.signature = cfg.color;
+          merged.initials  = cfg.color;
+          localStorage.setItem('fieldColors_lastSigColor', cfg.color);
+        }
+        setFieldColors(merged);
+        localStorage.setItem('fieldColors', JSON.stringify(merged));
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  // Reset field colors to defaults on new upload
+  useEffect(() => {
+    if (location.state?.uploadedDocumentId) {
+      const cfg = JSON.parse(localStorage.getItem('signatureConfig') || '{"color":"#1a1a1a"}');
+      const sigColor = cfg.color || '#1a1a1a';
+      const defaultColors = {
+        signature: sigColor,
+        initials: sigColor,
+        name: '#1a1a1a',
+        date: '#1a1a1a',
+        text: '#1a1a1a',
+        stamp: '#1a1a1a',
+      };
+      setFieldColors(defaultColors);
+      localStorage.setItem('fieldColors', JSON.stringify(defaultColors));
+      localStorage.setItem('fieldColors_lastSigColor', sigColor);
+      if (token) {
+        savePreferences({ field_colors: defaultColors });
+      }
+    }
+  }, [location.state?.uploadedDocumentId, token]);
+
+
+  /* ── debounced save to server whenever fieldColors changes ── */
+  useEffect(() => {
+    if (!token) return;
+    const t = setTimeout(() => {
+      const sig_config = JSON.parse(localStorage.getItem('signatureConfig') || 'null');
+      savePreferences({ sig_config, field_colors: fieldColors });
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [fieldColors, token]);
 
   /* ── load document list — runs once on mount, then only if token changes ──
      IMPORTANT: do NOT add location.state here. Calling navigate('/dashboard',
@@ -304,13 +442,24 @@ export default function Dashboard() {
     const y = Math.max(minY, Math.min(maxY, ((e.clientY - rect.top) / rect.height) * 100));
 
     let metadata = {};
-    // Use per-type custom color if set, else fall back to sigConfig color
-    const fieldColor = fieldColors[type] || sigConfig.color || '#1a1a1a';
-    if (type === 'signature') metadata = { text: sigConfig.name, font: sigConfig.font, color: fieldColors['signature'] || sigConfig.color || '#1a1a1a', drawingImage: sigConfig.drawingImage };
-    else if (type === 'initials') metadata = { text: sigConfig.initials, font: sigConfig.font, color: fieldColors['initials'] || sigConfig.color || '#1a1a1a' };
-    else if (type === 'name') metadata = { text: sigConfig.name, font: 'Inter', color: fieldColor };
-    else if (type === 'date') metadata = { text: new Date().toLocaleDateString(), font: 'Inter', color: fieldColor };
-    else if (type === 'text') metadata = { text: 'Double click to edit', font: 'Inter', color: fieldColor };
+    // Use per-type custom color if set; sig/initials fall back to sigConfig.color; others default to theme color
+    const isSigOrInitialsType = type === 'signature' || type === 'initials';
+    const defColor = fieldDefinitions.find(d => d.type === type)?.color || '#1a1a1a';
+    const fieldColor = fieldColors[type] || (isSigOrInitialsType ? (sigConfig.color || defColor) : defColor);
+    const autoInitials = sigConfig.name ? sigConfig.name.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('') : '';
+    const dropInitials = (sigConfig.initials && sigConfig.initials.length > 1) || !autoInitials ? sigConfig.initials : autoInitials;
+    const defaultSigColor = fieldDefinitions.find(d => d.type === 'signature')?.color || '#1a1a1a';
+    const defaultInitColor = fieldDefinitions.find(d => d.type === 'initials')?.color || '#1a1a1a';
+    const initialSizeMeta = {
+      w: dSize.w,
+      h: dSize.h,
+      wRatio: dSize.w / rect.width
+    };
+    if (type === 'signature') metadata = { ...initialSizeMeta, text: sigConfig.name, font: sigConfig.font, color: fieldColors['signature'] || sigConfig.color || defaultSigColor, drawingImage: sigConfig.drawingImage };
+    else if (type === 'initials') metadata = { ...initialSizeMeta, text: dropInitials, font: sigConfig.font, color: fieldColors['initials'] || sigConfig.color || defaultInitColor };
+    else if (type === 'name') metadata = { ...initialSizeMeta, text: sigConfig.name, font: 'Inter', color: fieldColor };
+    else if (type === 'date') metadata = { ...initialSizeMeta, text: new Date().toLocaleDateString(), font: 'Inter', color: fieldColor };
+    else if (type === 'text') metadata = { ...initialSizeMeta, text: 'Double click to edit', font: 'Inter', color: fieldColor };
     else if (type === 'stamp') {
       // Show stamp config modal instead of placing immediately
       setStampCompanyName('');
@@ -368,7 +517,17 @@ export default function Dashboard() {
     if (dir === 'w')  { anchorX = cx + w / 2; anchorY = cy; }          // Right-center anchored
     if (dir === 'n')  { anchorX = cx; anchorY = cy + h / 2; }          // Bottom-center anchored
     if (dir === 's')  { anchorX = cx; anchorY = cy - h / 2; }          // Top-center anchored
-    setResizingInfo({ fieldId: sig.id, dir, anchorX, anchorY, currentH: h, currentW: w });
+
+    const meta = sig.metadata || {};
+    const defaultPadX = sig.type === 'stamp' ? 8 : 6;
+    const defaultPadY = sig.type === 'stamp' ? 6 : 4;
+    setResizingInfo({ 
+      fieldId: sig.id, dir, anchorX, anchorY, currentH: h, currentW: w,
+      padTop: meta.padTop !== undefined ? meta.padTop : defaultPadY,
+      padBottom: meta.padBottom !== undefined ? meta.padBottom : defaultPadY,
+      padLeft: meta.padLeft !== undefined ? meta.padLeft : defaultPadX,
+      padRight: meta.padRight !== undefined ? meta.padRight : defaultPadX
+    });
   };
 
   const handleGlobalMouseMove = (e) => {
@@ -378,6 +537,7 @@ export default function Dashboard() {
       const my = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
       const { dir, anchorX, anchorY, fieldId } = resizingInfo;
       let newW, newH, newCX, newCY;
+      let padTop = resizingInfo.padTop, padBottom = resizingInfo.padBottom, padLeft = resizingInfo.padLeft, padRight = resizingInfo.padRight;
       const MIN_W = 60, MIN_H = 28;
       // Estimate min width from text length so field can't be shrunk below readable size
       const sigField = signatures.find(s => s.id === fieldId);
@@ -399,16 +559,47 @@ export default function Dashboard() {
         newH = Math.max(minH, Math.min(capH, Math.abs(my - anchorY)));
         newW = newH * aspect;
         
+        const scaleFactor = newH / resizingInfo.currentH;
+        padTop = Math.round(resizingInfo.padTop * scaleFactor);
+        padBottom = Math.round(resizingInfo.padBottom * scaleFactor);
+        padLeft = Math.round(resizingInfo.padLeft * scaleFactor);
+        padRight = Math.round(resizingInfo.padRight * scaleFactor);
+        
         const isEast = dir.includes('e');
         const isSouth = dir.includes('s');
         newCX = isEast ? anchorX + newW / 2 : anchorX - newW / 2;
         newCY = isSouth ? anchorY + newH / 2 : anchorY - newH / 2;
       } else {
-        // Mid-edge handles: freeform stretch
-        if (dir === 'e') { newW = Math.max(estimatedMinW, Math.min(maxW, mx - anchorX)); newH = resizingInfo.currentH; newCX = anchorX + newW / 2; newCY = anchorY; }
-        if (dir === 'w') { newW = Math.max(estimatedMinW, Math.min(maxW, anchorX - mx)); newH = resizingInfo.currentH; newCX = anchorX - newW / 2; newCY = anchorY; }
-        if (dir === 'n') { newH = Math.max(MIN_H, Math.min(maxH, anchorY - my)); newW = resizingInfo.currentW; newCX = anchorX; newCY = anchorY - newH / 2; }
-        if (dir === 's') { newH = Math.max(MIN_H, Math.min(maxH, my - anchorY)); newW = resizingInfo.currentW; newCX = anchorX; newCY = anchorY + newH / 2; }
+        // Mid-edge handles: add padding
+        newW = resizingInfo.currentW;
+        newH = resizingInfo.currentH;
+        newCX = anchorX; 
+        newCY = anchorY;
+
+        if (dir === 'e') { 
+          newW = Math.max(estimatedMinW, Math.min(maxW, mx - anchorX)); 
+          const deltaW = newW - resizingInfo.currentW;
+          padRight = Math.max(0, resizingInfo.padRight + deltaW);
+          newCX = anchorX + newW / 2; 
+        }
+        if (dir === 'w') { 
+          newW = Math.max(estimatedMinW, Math.min(maxW, anchorX - mx)); 
+          const deltaW = newW - resizingInfo.currentW;
+          padLeft = Math.max(0, resizingInfo.padLeft + deltaW);
+          newCX = anchorX - newW / 2; 
+        }
+        if (dir === 'n') { 
+          newH = Math.max(MIN_H, Math.min(maxH, anchorY - my)); 
+          const deltaH = newH - resizingInfo.currentH;
+          padTop = Math.max(0, resizingInfo.padTop + deltaH);
+          newCY = anchorY - newH / 2; 
+        }
+        if (dir === 's') { 
+          newH = Math.max(MIN_H, Math.min(maxH, my - anchorY)); 
+          const deltaH = newH - resizingInfo.currentH;
+          padBottom = Math.max(0, resizingInfo.padBottom + deltaH);
+          newCY = anchorY + newH / 2; 
+        }
       }
 
       const wPct = (newW / rect.width) * 100;
@@ -417,7 +608,7 @@ export default function Dashboard() {
       const newY = Math.max(hPct / 2, Math.min(100 - hPct / 2, (newCY / rect.height) * 100));
 
       setSignatures(sigs => sigs.map(s => s.id === fieldId
-        ? { ...s, x: newX, y: newY, metadata: { ...(s.metadata || {}), w: Math.round(newW), h: Math.round(newH) } }
+        ? { ...s, x: newX, y: newY, metadata: { ...(s.metadata || {}), w: Math.round(newW), h: Math.round(newH), padTop, padBottom, padLeft, padRight } }
         : s
       ));
       return;
@@ -447,6 +638,8 @@ export default function Dashboard() {
 
   const handleGlobalMouseUp = async (e) => {
     if (resizingInfo) {
+      wasDraggingRef.current = true;
+      setTimeout(() => { wasDraggingRef.current = false; }, 0);
       const field = signatures.find(s => s.id === resizingInfo.fieldId);
       setResizingInfo(null);
       if (field && selectedDocumentId) {
@@ -460,6 +653,8 @@ export default function Dashboard() {
       return;
     }
     if (draggingFieldId) {
+      wasDraggingRef.current = true;
+      setTimeout(() => { wasDraggingRef.current = false; }, 0);
       const sigToUpdate = signatures.find(s => s.id === draggingFieldId);
       setDraggingFieldId(null);
       if (sigToUpdate && selectedDocumentId) {
@@ -517,7 +712,6 @@ export default function Dashboard() {
   const handleOpenStampEdit = (e, sig) => {
     e.stopPropagation();
     const meta = sig.metadata || {};
-    setStampCompanyName(meta.text && meta.text !== 'Stamp Placeholder' ? meta.text : '');
     setStampImageB64(meta.image || null);
     setStampModal({ sig }); // editing existing field
   };
@@ -525,9 +719,13 @@ export default function Dashboard() {
   const handleStampApply = async () => {
     if (!stampModal) return;
     const { pendingX, pendingY, sig } = stampModal;
+    const dSize = getDefaultFieldSize('stamp');
+    const existingMeta = sig?.metadata || {};
     const metadata = {
-      text: stampCompanyName || 'Company Stamp',
       font: 'Inter',
+      w: existingMeta.w || dSize.w,
+      h: existingMeta.h || dSize.h,
+      wRatio: existingMeta.wRatio || (dSize.w / pageWidth),
       ...(stampImageB64 ? { image: stampImageB64 } : {}),
     };
     setStampModal(null);
@@ -555,24 +753,37 @@ export default function Dashboard() {
         } else {
           await refreshSigs(selectedDocumentId);
         }
-      } catch (err) { showToast('⚠️ ' + (err.message || 'Unable to place field')); }
+      } catch (err) {
+        const msg = err.message || '';
+        if (msg.toLowerCase().includes('too large') || msg.includes('413') || msg.toLowerCase().includes('entity')) {
+          showToast('⚠️ Stamp image is too large. Please use a smaller image (under 2MB).');
+        } else {
+          showToast('⚠️ Failed to save stamp: ' + (msg || 'Unknown error'));
+        }
+      }
     }
   };
 
   const handleOpenSigEdit = (e, sig) => {
     e.stopPropagation();
     const meta = sig.metadata || {};
-    setSigEditFont(meta.font || 'greatvibes');
-    setSigEditColor(meta.color || '#1a1a1a');
-    // For initials: auto-compute from name if not set
+    setSigEditFont(meta.font || sigConfig.font || 'greatvibes');
+    // Pre-fill color: stored field color → sigConfig color (chosen in Home) → black
+    const isSigOrInitials = sig.type === 'signature' || sig.type === 'initials';
+    setSigEditColor(meta.color || (isSigOrInitials ? (sigConfig.color || '#1a1a1a') : '#1a1a1a'));
+    // For initials: always compute from full name so changes to name are reflected
     let textVal = meta.text || '';
-    if (!textVal) {
-      const fullName = sigConfig.name || '';
-      if (sig.type === 'initials') {
-        textVal = fullName.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('');
-      } else {
-        textVal = fullName;
+    const fullName = sigConfig.name || '';
+    if (sig.type === 'initials') {
+      const computedInitials = fullName.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('');
+      // Use computed initials if:
+      //  - field has no text, OR
+      //  - stored text is a single letter but name has multiple words (stale data)
+      if (!textVal || (textVal.length < computedInitials.length && computedInitials.length > 1)) {
+        textVal = computedInitials;
       }
+    } else if (!textVal) {
+      textVal = fullName;
     }
     setSigEditText(textVal);
     setSigEditModal({ sig, tab: 'type' });
@@ -600,6 +811,26 @@ export default function Dashboard() {
         pageNumber: sig.page_number ?? sig.pageNumber,
         x: sig.x, y: sig.y, metadata: newMeta,
       });
+
+      // Sync changes back to global sigConfig so future fields use the new values
+      if (!drawingDataUrl) {
+        setSigConfig(prev => {
+          const next = { ...prev };
+          if (sig.type === 'signature') {
+            next.name = sigEditText;
+            next.initials = sigEditText.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('');
+          } else if (sig.type === 'initials') {
+            next.initials = sigEditText;
+          }
+          next.font = sigEditFont;
+          // Note: color is handled via fieldColors, but we can sync the base sigConfig color too
+          next.color = sigEditColor;
+          
+          localStorage.setItem('signatureConfig', JSON.stringify(next));
+          savePreferences({ sig_config: next });
+          return next;
+        });
+      }
     } catch (err) { showToast('⚠️ Failed to save: ' + err.message); }
   };
 
@@ -645,21 +876,131 @@ export default function Dashboard() {
     if (!selectedDocumentId || signatures.length === 0) return;
     try {
       setIsSigning(true);
-      const { signWithToken } = await import('../lib/documents');
-      const pendingSigs = signatures.filter(s => s.status === 'pending');
-      for (const sig of pendingSigs) {
-        const t = await generateSignatureToken(sig.id);
+      const { updateSignatureCoords } = await import('../lib/documents');
+      
+      // Update ALL signatures with their rendered PNGs
+      for (const sig of signatures) {
         const meta = sig.metadata || {};
-        // Pass the specific text for this field type so the backend renders it correctly
-        await signWithToken(t, {
-          signerName: sigConfig.name || 'Me',
-          fieldType: sig.type,
-          fieldText: meta.text || '',
-          fieldFont: meta.font || 'Inter',
-        });
+        
+        let generatedImage = null;
+        const { w, h } = getFieldSize(sig);
+        const scale = 3; // High DPI
+
+        const defaultPadX = sig.type === 'stamp' ? 8 : 6;
+        const defaultPadY = sig.type === 'stamp' ? 6 : 4;
+        const padTop = meta.padTop !== undefined ? meta.padTop : defaultPadY;
+        const padBottom = meta.padBottom !== undefined ? meta.padBottom : defaultPadY;
+        const padLeft = meta.padLeft !== undefined ? meta.padLeft : defaultPadX;
+        const padRight = meta.padRight !== undefined ? meta.padRight : defaultPadX;
+        const border = 2;
+        const headerH = 16;
+        const actualPadL = padLeft + border;
+        const actualPadR = padRight + border;
+        const actualPadT = padTop + border + headerH;
+        const actualPadB = padBottom + border;
+
+        const drawImageToCanvas = async (src, padL = 0, padT = 0, padR = 0, padB = 0) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = w * scale;
+          canvas.height = h * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.scale(scale, scale);
+          const img = new Image();
+          img.src = src;
+          await new Promise(r => { img.onload = r; img.onerror = r; });
+          if (img.width && img.height) {
+            const availW = Math.max(1, w - actualPadL - actualPadR);
+            const availH = Math.max(1, h - actualPadT - actualPadB);
+            const imgRatio = img.width / img.height;
+            const boxRatio = availW / availH;
+            let drawW = availW, drawH = availH, drawX = actualPadL, drawY = actualPadT;
+            if (imgRatio > boxRatio) {
+              drawH = availW / imgRatio;
+              drawY = actualPadT + (availH - drawH) / 2;
+            } else {
+              drawW = availH * imgRatio;
+              drawX = actualPadL + (availW - drawW) / 2;
+            }
+            
+            // Prevent upscaling beyond the image's natural size (matching UI max-width/max-height: 100%)
+            const maxW = img.width;
+            const maxH = img.height;
+            if (drawW > maxW || drawH > maxH) {
+              drawW = maxW;
+              drawH = maxH;
+              drawX = actualPadL + (availW - drawW) / 2;
+              drawY = actualPadT + (availH - drawH) / 2;
+            }
+
+            ctx.drawImage(img, drawX, drawY, drawW, drawH);
+          }
+          return canvas.toDataURL('image/png');
+        };
+
+        if (sig.type === 'stamp' && meta.image) {
+          generatedImage = await drawImageToCanvas(meta.image, padLeft, padTop, padRight, padBottom);
+        } else if ((sig.type === 'signature' || sig.type === 'initials') && meta.drawingImage) {
+          generatedImage = await drawImageToCanvas(meta.drawingImage, padLeft, padTop, padRight, padBottom);
+        } else {
+          // It's a text-based field
+          const canvas = document.createElement('canvas');
+          canvas.width = w * scale;
+          canvas.height = h * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.scale(scale, scale);
+          
+          let text = meta.text || '';
+          if (!text) {
+            if (sig.type === 'signature' || sig.type === 'name') text = sigConfig.name || 'Me';
+            else if (sig.type === 'initials') text = sigConfig.initials || 'ME';
+            else if (sig.type === 'date') text = new Date().toLocaleDateString();
+            else if (sig.type === 'text') text = 'Text';
+          }
+          
+          const isCursive = sig.type === 'signature';
+          const isInitials = sig.type === 'initials';
+          
+          const availW = Math.max(1, w - actualPadL - actualPadR);
+          const availH = Math.max(1, h - actualPadT - actualPadB);
+          
+          const maxFontH = isCursive ? availH * 0.75 : availH * 0.8;
+          let estWidthEms = 0;
+          for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (c === ' ') estWidthEms += isCursive ? 0.30 : 0.32;
+            else if (c === c.toUpperCase() && c.toLowerCase() !== c.toUpperCase()) estWidthEms += isInitials ? 0.85 : (isCursive ? 0.68 : 0.75);
+            else estWidthEms += isInitials ? 0.55 : (isCursive ? 0.48 : 0.50);
+          }
+          let maxFontW = availW / Math.max(1, estWidthEms);
+          if (isCursive) maxFontW *= 0.92; // 8% buffer for sweeping cursive tails to prevent clipping
+          const fontSize = Math.round(Math.min(maxFontH, maxFontW));
+          const fontFamily = getFontFamily(meta.font || 'Inter');
+          
+          ctx.font = `${isCursive ? 'italic ' : ''}normal ${fontSize}px ${fontFamily}`;
+          ctx.fillStyle = meta.color || '#1a1a1a';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          
+          const centerX = actualPadL + availW / 2;
+          const centerY = actualPadT + availH / 2;
+          ctx.fillText(text, centerX, centerY + (fontSize * 0.1));
+          generatedImage = canvas.toDataURL('image/png');
+        }
+
+        // Only update database if the image changed or it's missing, OR if wRatio is missing
+        const wRatio = w / pageWidth;
+        
+        if (meta.renderedImage !== generatedImage || meta.wRatio !== wRatio) {
+          await updateSignatureCoords(selectedDocumentId, sig.id, {
+            pageNumber: sig.page_number || sig.pageNumber || 1,
+            x: sig.x,
+            y: sig.y,
+            metadata: { ...meta, renderedImage: generatedImage, wRatio }
+          });
+        }
       }
-      await refreshSigs(selectedDocumentId);
-      // Navigate to the success page instead of auto-downloading
+      
+      // Navigate to the success page
       const safeName = selectedDocument?.originalName || 'document.pdf';
       navigate(`/signed?docId=${selectedDocumentId}&name=${encodeURIComponent(safeName)}`);
     } catch (err) {
@@ -751,7 +1092,7 @@ export default function Dashboard() {
 
       {/* ── Page nav toolbar ── */}
       {selectedDocument && (
-        <div className="shrink-0 flex items-center gap-3 px-4 border-b border-gray-200 bg-white" style={{ height: 48 }}>
+        <div className="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2 border-b border-gray-200 bg-white min-h-[48px] h-auto">
           <div className="flex items-center bg-gray-100 rounded" style={{ height: 30 }}>
             <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage <= 1}
               className="px-2 h-full flex items-center text-gray-600 hover:bg-gray-200 disabled:opacity-30 rounded-l transition">
@@ -804,10 +1145,10 @@ export default function Dashboard() {
       )}
 
       {/* ── Three-panel editor ── */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex flex-col lg:flex-row overflow-auto lg:overflow-hidden">
 
         {/* ── LEFT: thumbnail strip ── */}
-        <aside className="shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-y-auto custom-scrollbar" style={{ width: 160 }}>
+        <aside className="shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-row lg:flex-col overflow-x-auto lg:overflow-y-auto custom-scrollbar w-full lg:w-[160px]">
           {isLoadingDocuments ? (
             <div className="p-3 space-y-2">
               {[1,2].map(i => <div key={i} className="h-20 bg-gray-100 rounded animate-pulse" />)}
@@ -815,9 +1156,24 @@ export default function Dashboard() {
           ) : (
             <>
               {documents.length > 0 && (
-                <div className="p-2 border-b border-gray-100">
+                <div className="p-2 border-r lg:border-r-0 lg:border-b border-gray-100 flex flex-row lg:flex-col gap-1 items-stretch shrink-0">
+                  <div className="flex items-center justify-between px-2 pb-2 mb-1 border-b border-gray-100">
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input 
+                        type="checkbox" 
+                        checked={documents.length > 0 && checkedDocumentIds.length === documents.length}
+                        onChange={(e) => {
+                          if (e.target.checked) setCheckedDocumentIds(documents.map(d => d.id));
+                          else setCheckedDocumentIds([]);
+                        }}
+                        className="w-3.5 h-3.5 text-[#e8222c] bg-white border-gray-300 rounded focus:ring-[#e8222c] cursor-pointer accent-[#e8222c] transition-all"
+                      />
+                      <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wide group-hover:text-gray-700 transition-colors">Select All</span>
+                    </label>
+                  </div>
+
                   {checkedDocumentIds.length > 0 && (
-                    <button onClick={() => setShowBulkDeleteModal(true)} className="w-full mb-2 bg-red-50 text-red-600 text-[10px] font-bold py-1.5 rounded flex items-center justify-center gap-1 hover:bg-red-100 border border-red-200 transition">
+                    <button onClick={() => setShowBulkDeleteModal(true)} className="w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                       Delete Selected ({checkedDocumentIds.length})
                     </button>
@@ -826,36 +1182,39 @@ export default function Dashboard() {
                     const isSel = doc.id === selectedDocumentId;
                     const isChecked = checkedDocumentIds.includes(doc.id);
                     return (
-                      <div key={doc.id} className={`flex items-center w-full rounded-lg mb-1 transition border ${isSel ? 'bg-red-50 border-[#e8222c]/30' : 'hover:bg-gray-50 border-transparent'}`}>
-                        <div className="pl-2 flex items-center justify-center">
+                      <div key={doc.id} className={`flex items-center w-[160px] lg:w-full shrink-0 rounded-xl transition-all border ${isSel ? 'bg-red-50 border-[#e8222c]/40 shadow-sm' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
+                        <label className="pl-3 py-2 flex items-center justify-center cursor-pointer mb-0">
                           <input 
                             type="checkbox" 
                             checked={isChecked}
                             onChange={() => toggleDocumentCheck(doc.id)}
                             className="w-3.5 h-3.5 text-[#e8222c] bg-white border-gray-300 rounded focus:ring-[#e8222c] cursor-pointer accent-[#e8222c]"
                           />
-                        </div>
+                        </label>
                         <button onClick={() => setSelectedDocumentId(doc.id)}
-                          className="flex-1 text-left p-2 text-xs flex flex-col overflow-hidden">
-                          <div className="flex items-center gap-1.5">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill={isSel ? '#e8222c' : '#9ca3af'} className="shrink-0">
+                          className="flex-1 text-left p-2.5 text-xs flex flex-col overflow-hidden group">
+                          <div className="flex items-center gap-2">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill={isSel ? '#e8222c' : '#9ca3af'} className={`shrink-0 transition-colors ${!isSel ? 'group-hover:fill-gray-500' : ''}`}>
                               <path d="M14 2H6C4.9 2 4 2.9 4 4v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" />
                             </svg>
-                            <span className={`truncate font-medium ${isSel ? 'text-[#e8222c]' : 'text-gray-600'}`}>{doc.originalName}</span>
+                            <span className={`truncate font-medium transition-colors ${isSel ? 'text-[#e8222c]' : 'text-gray-600 group-hover:text-gray-900'}`}>{doc.originalName}</span>
                           </div>
                           {doc.status === 'signed' && (
-                            <span className="mt-1 inline-block text-[9px] font-bold text-green-600 bg-green-50 rounded px-1.5 py-0.5 w-max">SIGNED</span>
+                            <span className="mt-1.5 inline-block text-[9px] font-bold text-green-600 bg-green-100/80 rounded px-2 py-0.5 w-max tracking-wide">SIGNED</span>
                           )}
                         </button>
                       </div>
                     );
                   })}
-                  <Link to="/" className="block text-center text-[10px] font-bold text-[#e8222c] hover:underline mt-1 py-1">+ Upload PDF</Link>
+                  <Link to="/" className="w-full text-center text-[11px] font-bold text-[#e8222c] bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all mt-2 py-2 flex items-center justify-center gap-1.5 shadow-sm">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                    Upload PDF
+                  </Link>
                 </div>
               )}
 
               {numPages > 0 && (
-                <div className="flex flex-col items-center gap-3 p-3">
+                <div className="flex flex-row lg:flex-col items-center gap-3 p-3 shrink-0">
                   {Array.from({ length: numPages }, (_, i) => i + 1).map(pg => (
                     <button key={pg} onClick={() => setCurrentPage(pg)} className="flex flex-col items-center gap-1 group transition">
                       <div className={`border-2 rounded overflow-hidden transition ${currentPage === pg ? 'border-[#e8222c] shadow-md' : 'border-gray-200 group-hover:border-gray-400'}`} style={{ width: 112 }}>
@@ -885,7 +1244,7 @@ export default function Dashboard() {
         <main ref={pdfWrapperRef}
           className="flex-1 overflow-auto custom-scrollbar flex justify-center items-start"
           style={{ background: '#f0f1f5', padding: 32 }}
-          onClick={() => { setSelectedFieldId(null); setEditingFieldId(null); }}>
+          onClick={() => { if (wasDraggingRef.current) return; setSelectedFieldId(null); setEditingFieldId(null); }}>
           {!selectedDocument && !isLoadingDocument ? (
             <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" opacity="0.25">
@@ -901,7 +1260,7 @@ export default function Dashboard() {
           ) : (
             <div ref={pageCanvasRef} className="relative"
               style={{ boxShadow: '0 4px 32px rgba(0,0,0,0.18)' }}
-              onClick={() => { setSelectedFieldId(null); setEditingFieldId(null); }}
+              onClick={() => { if (wasDraggingRef.current) return; setSelectedFieldId(null); setEditingFieldId(null); }}
               onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
 
               {/* Drag overlay */}
@@ -944,11 +1303,15 @@ export default function Dashboard() {
                 //   Signature: longer mixed-case name, narrower average per em, larger box
                 const isCursive  = sig.type === 'signature' || sig.type === 'initials';
                 const isInitials = sig.type === 'initials';
-                const PAD_X = 6;
-                const PAD_Y = 4;
+                const defaultPadX = sig.type === 'stamp' ? 8 : 6;
+                const defaultPadY = sig.type === 'stamp' ? 6 : 4;
+                const padTop = meta.padTop !== undefined ? meta.padTop : defaultPadY;
+                const padBottom = meta.padBottom !== undefined ? meta.padBottom : defaultPadY;
+                const padLeft = meta.padLeft !== undefined ? meta.padLeft : defaultPadX;
+                const padRight = meta.padRight !== undefined ? meta.padRight : defaultPadX;
 
                 // Height constraint — leave room for ascenders & descenders
-                const availH = Math.max(20, h - PAD_Y * 2);
+                const availH = Math.max(20, h - padTop - padBottom);
                 const maxFontH = isInitials
                   ? availH * 0.68                // initials: shorter box, all-caps → more conservative
                   : isCursive
@@ -958,7 +1321,7 @@ export default function Dashboard() {
                 // Width constraint — character width estimates per 1em
                 // Initials are uppercase-heavy; uppercase script glyphs (S, Q, G, etc.)
                 // are ~0.85em wide vs ~0.68em for mixed-case signature text.
-                const availW = Math.max(20, w - PAD_X * 2);
+                const availW = Math.max(20, w - padLeft - padRight);
                 const textStr = meta.text || def.label;
                 let estWidthEms = 0;
                 for (let i = 0; i < textStr.length; i++) {
@@ -993,14 +1356,14 @@ export default function Dashboard() {
                     </div>
                   );
                   if (sig.type === 'stamp') return (
-                    <div className="w-full h-full flex flex-col items-center justify-center" style={{ padding: '6px 8px' }}>
+                    <div className="w-full h-full flex flex-col items-center justify-center">
                       {meta.image
-                        ? <img src={meta.image} alt="Stamp" style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' }} />
-                        : <span style={{ fontSize: 12, color: '#8b5cf6', fontWeight: 600, textAlign: 'center' }}>{meta.text && meta.text !== 'Stamp Placeholder' ? meta.text : 'Tap Edit'}</span>}
+                        ? <img src={meta.image} alt="Stamp" draggable={false} style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' }} />
+                        : <span style={{ fontSize: 12, color: '#8b5cf6', fontWeight: 600, textAlign: 'center' }}>Tap Edit</span>}
                     </div>
                   );
                   if (meta.drawingImage) return (
-                    <img src={meta.drawingImage} alt="Signature" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                    <img src={meta.drawingImage} alt="Signature" draggable={false} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
                   );
                   return (
                     <span style={{
@@ -1029,8 +1392,8 @@ export default function Dashboard() {
 
                     {sig.status === 'signed' ? (
                       <div className="flex items-center gap-2 rounded px-3 py-1.5 h-full"
-                        style={{ background: '#f0fdf4', border: '1.5px solid #86efac' }}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="#22c55e"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+                        style={{ background: 'rgba(240, 253, 244, 1)', border: '1.5px solid #86efac' }}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="rgba(34, 197, 94, 1)"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
                         <span className="text-xs font-bold text-green-700">Signed</span>
                       </div>
                     ) : isSelected ? (
@@ -1086,12 +1449,12 @@ export default function Dashboard() {
                           {/* Header */}
                           <div className="shrink-0 flex items-center gap-1 px-1.5 border-b" style={{ height: 16, borderColor: `${def.color}33`, background: `${def.color}22` }}>
                             <DragHandle />
-                            {def.icon}
+                            {getFieldIcon(def.type, def.color, 11)}
                             <span className="font-bold truncate" style={{ color: def.color, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{def.label}</span>
                           </div>
                           {/* Content — text scales with height, always centered */}
                           <div className="flex-1 overflow-hidden flex items-center justify-center"
-                            style={{ padding: `${PAD_Y}px ${PAD_X}px` }}>
+                            style={{ padding: `${padTop}px ${padRight}px ${padBottom}px ${padLeft}px` }}>
                             {renderContent()}
                           </div>
                         </div>
@@ -1112,13 +1475,22 @@ export default function Dashboard() {
                           <div key={dir}
                             className="absolute w-3 h-3 bg-white rounded-sm z-30 border-2"
                             style={{ ...style, borderColor: def.color }}
-                            onMouseDown={e => handleResizeStart(e, sig, dir)} />
+                            onMouseDown={e => handleResizeStart(e, sig, dir)}
+                            onClick={e => e.stopPropagation()} />
                         ))}
                       </>
                     ) : (
                       /* ── DESELECTED: completely transparent to preview the final result ── */
-                      <div className="flex items-center justify-center w-full h-full rounded transition-all"
-                        style={{ background: 'transparent', border: '1.5px solid transparent' }}
+                      <div className="flex items-center justify-center w-full h-full rounded"
+                        style={{
+                          background: 'transparent',
+                          border: '1.5px solid transparent',
+                          // Match selected state layout: header(16px) + padTop & padBottom padding
+                          paddingTop: 16 + padTop,
+                          paddingBottom: padBottom,
+                          paddingLeft: padLeft,
+                          paddingRight: padRight,
+                        }}
                         onMouseEnter={e => e.currentTarget.style.border = `1.5px dashed ${def.color}88`}
                         onMouseLeave={e => e.currentTarget.style.border = '1.5px solid transparent'}>
                         {renderContent()}
@@ -1132,34 +1504,12 @@ export default function Dashboard() {
         </main>
 
         {/* ── RIGHT: Signing options ── */}
-        <aside className="shrink-0 bg-white border-l border-gray-200 flex flex-col overflow-hidden" style={{ width: 320 }}>
+        <aside className="shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden w-full lg:w-[320px]">
           <div className="shrink-0 flex items-center px-6 border-b border-gray-100" style={{ height: 56 }}>
             <h2 className="font-bold text-gray-900" style={{ fontSize: 20 }}>Signing options</h2>
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-5 space-y-6">
-            {/* Type */}
-            <div>
-              <p className="text-xs font-semibold text-gray-400 mb-3 uppercase" style={{ letterSpacing: 0.5 }}>Type</p>
-              <div className="flex gap-3">
-                <button className="flex-1 flex flex-col items-center gap-2 rounded-xl py-4" style={{ border: '2px solid #e8222c' }}>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="#e8222c">
-                    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
-                  </svg>
-                  <span className="text-xs font-bold" style={{ color: '#e8222c' }}>Simple Signature</span>
-                </button>
-                <button disabled className="flex-1 flex flex-col items-center gap-2 rounded-xl py-4 relative opacity-50 cursor-not-allowed" style={{ border: '2px solid #e5e7eb', background: '#fafafa' }}>
-                  <div className="absolute -top-2 -right-2">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm0 3a1 1 0 000 2h14a1 1 0 000-2H5z" /></svg>
-                  </div>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="#9ca3af">
-                    <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z" />
-                  </svg>
-                  <span className="text-xs font-bold text-gray-400">Digital Signature</span>
-                </button>
-              </div>
-            </div>
-
             {/* Fields Toolbar */}
             {selectedDocumentId && (
               <div>
@@ -1175,34 +1525,57 @@ export default function Dashboard() {
                   type="color"
                   value={colorPickingType
                     ? (fieldColors[colorPickingType]
-                        || ((colorPickingType === 'signature' || colorPickingType === 'initials') ? (sigConfig.color || '#1a1a1a') : '#1a1a1a'))
+                        || ((colorPickingType === 'signature' || colorPickingType === 'initials')
+                            ? (sigConfig.color || (fieldDefinitions.find(d => d.type === colorPickingType)?.color || '#1a1a1a'))
+                            : (fieldDefinitions.find(d => d.type === colorPickingType)?.color || '#1a1a1a')))
                     : '#1a1a1a'}
                   onChange={e => colorPickingType && handleFieldColorPick(colorPickingType, e.target.value)}
                   onBlur={() => setColorPickingType(null)}
                   style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }}
                 />
-                <div className="flex flex-col gap-1">
+                <div className="flex flex-col gap-2.5">
                   {fieldDefinitions.map(f => {
                     const customColor = fieldColors[f.type];
-                    // Effective text color: custom override → sigConfig.color (for sig/initials) → black
                     const isSigType = f.type === 'signature' || f.type === 'initials';
-                    const effectiveColor = customColor || (isSigType ? (sigConfig.color || '#1a1a1a') : '#1a1a1a');
+                    const isStamp = f.type === 'stamp';
+                    // Company Stamp is an image upload and cannot change color — freeze it to f.color
+                    const effectiveColor = isStamp
+                      ? f.color
+                      : (customColor || (isSigType ? (sigConfig.color || f.color) : f.color));
                     return (
                       <div key={f.type} draggable onDragStart={e => handleDragStart(e, f.type)}
-                        onDoubleClick={e => openColorPicker(e, f.type)}
-                        className="flex flex-row items-center justify-start gap-2.5 rounded-lg cursor-grab active:cursor-grabbing hover:shadow-md hover:-translate-y-0.5 transition-all select-none bg-white"
-                        style={{ border: `1px solid ${f.color}40`, padding: '5px 10px', boxShadow: '0 1px 4px rgba(0,0,0,0.03)' }}
-                        title={`Drag to place ${f.label} · Double-click to change text color`}>
-                        <div className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 26, height: 26, background: f.bg }}>
-                          {f.icon}
+                        onDoubleClick={e => !isStamp && openColorPicker(e, f.type)}
+                        className="flex flex-row items-center justify-between rounded-xl cursor-grab active:cursor-grabbing hover:shadow-md hover:-translate-y-0.5 transition-all select-none bg-white"
+                        style={{
+                          border: '1px solid #e5e7eb',
+                          borderLeft: `4px solid ${effectiveColor}`,
+                          padding: '8px 14px',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+                        }}
+                        title={isStamp
+                          ? `Drag to place ${f.label}`
+                          : `Drag to place ${f.label} · Double-click to change text color (Field color shown on PDF after placement)`}>
+                        <div className="flex items-center gap-3.5">
+                          {/* Icon container with solid background using effectiveColor */}
+                          <div className="shrink-0 flex items-center justify-center rounded-xl transition-all" style={{ width: 34, height: 34, background: effectiveColor }}>
+                            {getFieldIcon(f.type, '#ffffff', 18)}
+                          </div>
+                          <div style={{ fontSize: 14, color: '#1f2937', fontWeight: 500 }}>{f.label}</div>
                         </div>
-                        <div style={{ fontSize: 13, color: '#374151', fontWeight: 600, flex: 1 }}>{f.label}</div>
-                        {/* Color dot — shows the actual text color that will be used */}
+                        {/* Swatch (Preview on the right) in effectiveColor */}
                         <div
-                          className="shrink-0 rounded-full"
-                          style={{ width: 10, height: 10, background: effectiveColor, boxShadow: '0 0 0 1.5px #e5e7eb' }}
-                          title={`Text color: ${effectiveColor}`}
-                        />
+                          className="shrink-0 flex items-center justify-center font-bold select-none transition-colors"
+                          style={{
+                            width: 34,
+                            height: 34,
+                            color: effectiveColor,
+                            fontSize: f.type === 'date' ? 12 : 16,
+                            fontFamily: 'Inter, sans-serif'
+                          }}
+                          title={isStamp ? undefined : "Field color shown on PDF after placement"}
+                        >
+                          {isStamp ? getFieldIcon('stamp', effectiveColor, 18) : getFieldPreviewText(f.type)}
+                        </div>
                       </div>
                     );
                   })}
@@ -1434,7 +1807,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-      {/* ══════════════════════════════════════════════════════
+      {
+      /* ══════════════════════════════════════════════════════
           Signature / Initials Style Edit Modal
       ══════════════════════════════════════════════════════ */}
       {sigEditModal && (() => {
@@ -1512,7 +1886,9 @@ export default function Dashboard() {
               {/* Name + Initials row */}
               <div className="flex gap-4 px-6 pt-4 pb-2">
                 <div className="flex-1">
-                  <label className="text-xs font-semibold text-gray-500 mb-1 block">Full name:</label>
+                  <label className="text-xs font-semibold text-gray-500 mb-1 block">
+                    {isInitials ? 'Initials:' : 'Full name:'}
+                  </label>
                   <input
                     value={sigEditText}
                     onChange={e => {
@@ -1676,7 +2052,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <div>
                 <h3 className="font-bold text-gray-900" style={{ fontSize: 18 }}>Company Stamp</h3>
-                <p className="text-xs text-gray-400 mt-0.5">Upload your company stamp or enter company name</p>
+                <p className="text-xs text-gray-400 mt-0.5">Upload your company stamp image</p>
               </div>
               <button onClick={() => setStampModal(null)}
                 className="p-2 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition">
@@ -1685,16 +2061,6 @@ export default function Dashboard() {
             </div>
 
             <div className="px-6 py-5 space-y-4">
-              {/* Company name input */}
-              <div>
-                <label className="text-xs font-semibold text-gray-500 mb-1.5 block">Company Name</label>
-                <input
-                  value={stampCompanyName}
-                  onChange={e => setStampCompanyName(e.target.value)}
-                  placeholder="e.g. Acme Corp"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400 transition"
-                />
-              </div>
 
               {/* Upload area */}
               <div>
@@ -1708,7 +2074,23 @@ export default function Dashboard() {
                     const file = e.target.files?.[0];
                     if (!file) return;
                     const reader = new FileReader();
-                    reader.onload = ev => setStampImageB64(ev.target.result);
+                    reader.onload = ev => {
+                      const result = ev.target.result;
+                      if (result.startsWith('data:image/svg+xml')) {
+                        const img = new Image();
+                        img.onload = () => {
+                          const canvas = document.createElement('canvas');
+                          canvas.width = img.width || 300;
+                          canvas.height = img.height || 150;
+                          const ctx = canvas.getContext('2d');
+                          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                          setStampImageB64(canvas.toDataURL('image/png'));
+                        };
+                        img.src = result;
+                      } else {
+                        setStampImageB64(result);
+                      }
+                    };
                     reader.readAsDataURL(file);
                   }}
                 />
@@ -1720,7 +2102,23 @@ export default function Dashboard() {
                     const file = e.dataTransfer.files?.[0];
                     if (!file) return;
                     const reader = new FileReader();
-                    reader.onload = ev => setStampImageB64(ev.target.result);
+                    reader.onload = ev => {
+                      const result = ev.target.result;
+                      if (result.startsWith('data:image/svg+xml')) {
+                        const img = new Image();
+                        img.onload = () => {
+                          const canvas = document.createElement('canvas');
+                          canvas.width = img.width || 300;
+                          canvas.height = img.height || 150;
+                          const ctx = canvas.getContext('2d');
+                          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                          setStampImageB64(canvas.toDataURL('image/png'));
+                        };
+                        img.src = result;
+                      } else {
+                        setStampImageB64(result);
+                      }
+                    };
                     reader.readAsDataURL(file);
                   }}
                   className="w-full rounded-xl border-2 border-dashed cursor-pointer flex flex-col items-center justify-center gap-3 transition hover:border-purple-400 hover:bg-purple-50"
@@ -1759,7 +2157,7 @@ export default function Dashboard() {
                 Cancel
               </button>
               <button onClick={handleStampApply}
-                disabled={!stampCompanyName && !stampImageB64}
+                disabled={!stampImageB64}
                 className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition hover:opacity-90 disabled:opacity-40"
                 style={{ background: '#8b5cf6' }}>
                 Apply Stamp

@@ -19,7 +19,12 @@ export const authenticateToken = (req, res, next) => {
 
 export const optionalAuthenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    let token = authHeader && authHeader.split(' ')[1];
+
+    // Fallback to query parameter for direct browser navigations (like file downloads)
+    if (!token && req.query.authToken) {
+        token = req.query.authToken;
+    }
 
     if (!token) {
         return next();

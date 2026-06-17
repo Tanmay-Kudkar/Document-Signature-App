@@ -46,6 +46,16 @@ export const initDb = async () => {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='signatures' AND column_name='metadata') THEN
                     ALTER TABLE signatures ADD COLUMN metadata JSONB;
                 END IF;
+
+                -- Create user_preferences table for persisted sig config + field colors
+                IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='user_preferences') THEN
+                    CREATE TABLE user_preferences (
+                        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                        sig_config  JSONB,
+                        field_colors JSONB,
+                        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                END IF;
             END $$;
         `);
         

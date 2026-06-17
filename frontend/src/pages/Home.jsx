@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
 import NeonSweepButton from '../components/NeonSweepButton';
+import { savePreferences } from '../lib/preferences';
 
 export default function Home() {
   const {
@@ -104,6 +105,8 @@ export default function Home() {
     }
     // Save to localStorage
     localStorage.setItem('signatureConfig', JSON.stringify(finalConfig));
+    // Persist to database (best-effort, no await needed here)
+    savePreferences({ sig_config: finalConfig });
     setShowSigConfig(false);
     handleUploadAndNavigate();
   };
@@ -161,8 +164,8 @@ export default function Home() {
         style={{ minHeight: 'calc(100vh - 56px)' }}
       >
         <h1
-          className="text-center font-bold mb-3"
-          style={{ fontSize: 42, color: '#1a1a1a', letterSpacing: -1, lineHeight: 1.15 }}
+          className="text-center font-bold mb-3 text-4xl md:text-[42px]"
+          style={{ color: '#1a1a1a', letterSpacing: -1, lineHeight: 1.15 }}
         >
           Sign PDF
         </h1>
@@ -272,14 +275,14 @@ export default function Home() {
             style={{ maxWidth: 640, boxShadow: '0 24px 80px rgba(0,0,0,0.18)' }}
           >
             {/* Header */}
-            <div className="px-10 pt-10 pb-6">
-              <h2 className="text-center font-bold text-gray-900" style={{ fontSize: 26 }}>
+            <div className="px-5 sm:px-10 pt-8 sm:pt-10 pb-6">
+              <h2 className="text-center font-bold text-gray-900 text-xl sm:text-[26px]">
                 Who will sign this document?
               </h2>
             </div>
 
             {/* Two cards */}
-            <div className="flex gap-4 px-8 pb-6">
+            <div className="flex flex-col sm:flex-row gap-4 px-5 sm:px-8 pb-6">
               {/* Only me */}
               <div
                 className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-8 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition group"
@@ -389,8 +392,8 @@ export default function Home() {
             style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}
           >
             {/* Modal header */}
-            <div className="flex items-center justify-between px-8 pt-7 pb-5 shrink-0">
-              <h2 className="font-bold text-gray-900" style={{ fontSize: 24 }}>Set your signature details</h2>
+            <div className="flex items-center justify-between px-5 sm:px-8 pt-5 sm:pt-7 pb-5 shrink-0">
+              <h2 className="font-bold text-gray-900 text-lg sm:text-[24px]">Set your signature details</h2>
               <Link
                 to="/login"
                 className="text-sm font-bold text-[#e8222c] border-2 border-[#e8222c] px-4 py-1.5 rounded-lg hover:bg-red-50 transition"
@@ -400,7 +403,7 @@ export default function Home() {
             </div>
 
             {/* Name + Initials + Avatar row */}
-            <div className="flex items-start gap-4 px-8 pb-5 shrink-0">
+            <div className="flex flex-col sm:flex-row items-center gap-4 px-5 sm:px-8 pb-5 shrink-0">
               {/* Avatar circle */}
               <div
                 className="shrink-0 flex items-center justify-center rounded-full mt-5"
@@ -412,7 +415,7 @@ export default function Home() {
               </div>
 
               {/* Full name */}
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 w-full">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full name:</label>
                 <input
                   value={sigConfig.name}
@@ -426,7 +429,7 @@ export default function Home() {
               </div>
 
               {/* Initials */}
-              <div className="shrink-0" style={{ width: 160 }}>
+              <div className="shrink-0 w-full sm:w-[160px]">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Initials:</label>
                 <input
                   value={sigConfig.initials}

@@ -40,13 +40,14 @@ export default function Layout() {
     }
   };
 
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const isLoggedIn = !!localStorage.getItem('token');
 
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans flex flex-col">
       {/* ── Navbar ── */}
       <header className="sticky top-0 z-50 bg-white border-b border-gray-200" style={{ height: 56 }}>
-        <div className="mx-auto max-w-[1400px] px-4 h-full flex items-center gap-4">
+        <div className="mx-auto max-w-[1400px] px-4 sm:px-6 h-full flex items-center gap-4">
 
           {/* Logo */}
           <Link to="/" className="flex items-center shrink-0 mr-2 select-none gap-2 hover:opacity-90 transition" style={{ minWidth: 110 }}>
@@ -66,7 +67,7 @@ export default function Layout() {
             </span>
           </Link>
 
-          {/* Nav links */}
+          {/* Nav links (Desktop) */}
           <nav className="hidden lg:flex items-center gap-0">
             {['MERGE PDF', 'SPLIT PDF', 'COMPRESS PDF'].map(label => (
               <a
@@ -93,8 +94,8 @@ export default function Layout() {
 
           <div className="flex-1" />
 
-          {/* Right actions */}
-          <div className="flex items-center gap-2">
+          {/* Right actions (Desktop) */}
+          <div className="hidden md:flex items-center gap-2">
             {isLoggedIn ? (
               <>
                 <NeonSweepButton
@@ -144,7 +145,83 @@ export default function Layout() {
               </svg>
             </button>
           </div>
+
+          {/* Hamburger Menu (Mobile) */}
+          <button 
+            className="md:hidden p-2 text-gray-600 hover:bg-gray-100 rounded-md transition"
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {isMobileMenuOpen ? (
+                <>
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </>
+              ) : (
+                <>
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </>
+              )}
+            </svg>
+          </button>
         </div>
+
+        {/* Mobile Dropdown Menu */}
+        {isMobileMenuOpen && (
+          <div className="md:hidden absolute top-[56px] left-0 w-full bg-white border-b border-gray-200 shadow-lg flex flex-col p-4 gap-4 z-40">
+            <nav className="flex flex-col gap-2">
+              {['MERGE PDF', 'SPLIT PDF', 'COMPRESS PDF', 'CONVERT PDF', 'ALL PDF TOOLS'].map(label => (
+                <a
+                  key={label}
+                  href="#"
+                  className="px-2 py-2 text-[14px] font-semibold text-gray-700 hover:text-gray-900 transition-colors"
+                  onClick={e => { e.preventDefault(); setIsMobileMenuOpen(false); }}
+                >
+                  {label}
+                </a>
+              ))}
+            </nav>
+            <div className="border-t border-gray-100 pt-4 flex flex-col gap-2">
+              {isLoggedIn ? (
+                <>
+                  <NeonSweepButton
+                    onClick={() => { navigate('/dashboard'); setIsMobileMenuOpen(false); }}
+                    tone="slate"
+                    className="w-full justify-center"
+                  >
+                    Dashboard
+                  </NeonSweepButton>
+                  <NeonSweepButton
+                    onClick={() => { localStorage.removeItem('token'); window.location.href = '/'; }}
+                    tone="danger"
+                    className="w-full justify-center"
+                  >
+                    Log out
+                  </NeonSweepButton>
+                </>
+              ) : (
+                <>
+                  <NeonSweepButton
+                    onClick={() => { navigate('/login'); setIsMobileMenuOpen(false); }}
+                    tone="slate"
+                    className="w-full justify-center"
+                  >
+                    Login
+                  </NeonSweepButton>
+                  <NeonSweepButton
+                    onClick={() => { navigate('/signup'); setIsMobileMenuOpen(false); }}
+                    tone="danger"
+                    className="w-full justify-center"
+                  >
+                    Sign up
+                  </NeonSweepButton>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Hidden file input shared across pages */}

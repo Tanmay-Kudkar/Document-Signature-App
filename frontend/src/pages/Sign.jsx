@@ -402,27 +402,6 @@ export default function Sign() {
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-5 space-y-6">
-              {/* Type */}
-              <div>
-                <p className="text-xs font-semibold text-gray-500 mb-3">Type</p>
-                <div className="flex gap-3">
-                  <button className="flex-1 flex flex-col items-center gap-2 rounded-xl py-4 transition" style={{ border: '2px solid #e8222c' }}>
-                    <svg width="26" height="26" viewBox="0 0 24 24" fill="#e8222c">
-                      <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
-                    </svg>
-                    <span className="text-xs font-bold" style={{ color: '#e8222c' }}>Simple Signature</span>
-                  </button>
-                  <button className="flex-1 flex flex-col items-center gap-2 rounded-xl py-4 relative opacity-50 cursor-not-allowed" style={{ border: '2px solid #e5e7eb', background: '#fafafa' }} disabled>
-                    <div className="absolute -top-2 -right-2">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm0 3a1 1 0 000 2h14a1 1 0 000-2H5z"/></svg>
-                    </div>
-                    <svg width="26" height="26" viewBox="0 0 24 24" fill="#9ca3af">
-                      <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
-                    </svg>
-                    <span className="text-xs font-bold text-gray-400">Digital Signature</span>
-                  </button>
-                </div>
-              </div>
 
               {/* Required fields */}
               <div>

@@ -1,7 +1,7 @@
 import { pool } from '../db.js';
 import jwt from 'jsonwebtoken';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import { createSignature, getSignaturesByDocument, getSignatureById, updateSignatureStatus } from '../models/signatureModel.js';
+import { createSignature, getSignaturesByDocument, getSignatureById, updateSignatureStatus, deleteSignature, updateSignatureCoordinates } from '../models/signatureModel.js';
 
 const getDocumentUrls = (req, documentId) => {
     const baseUrl = `${req.protocol}://${req.get('host')}`;
@@ -183,9 +183,76 @@ export const streamDocument = async (req, res) => {
             ? 'attachment'
             : 'inline';
 
+        let outputBuffer = document.file_data;
+
+        // If it's a download, dynamically burn the signatures into the PDF on the fly!
+        if (disposition === 'attachment') {
+            const signatures = await getSignaturesByDocument(documentId);
+            if (signatures.length > 0) {
+                const pdfDoc = await PDFDocument.load(document.file_data, { ignoreEncryption: true });
+                const pages = pdfDoc.getPages();
+                
+                for (const signature of signatures) {
+                    const pageIndex = (signature.page_number || signature.pageNumber || 1) - 1;
+                    if (pageIndex < 0 || pageIndex >= pages.length) continue;
+                    
+                    const page = pages[pageIndex];
+                    const { width, height } = page.getSize();
+                    
+                    const xPercent = Number(signature.x);
+                    const yPercent = Number(signature.y);
+                    const xPos = (xPercent / 100) * width;
+                    const yPos = height - (yPercent / 100) * height;
+                    
+                    const meta = signature.metadata || {};
+                    // We saved the generated frontend UI PNG snapshot here!
+                    const signatureImage = meta.renderedImage || null;
+                    
+                    if (signatureImage) {
+                        try {
+                            const isPng = signatureImage.startsWith('data:image/png');
+                            const isJpg = signatureImage.startsWith('data:image/jpeg') || signatureImage.startsWith('data:image/jpg');
+                            if (!isPng && !isJpg) continue;
+                            
+                            const base64Data = signatureImage.split(',')[1];
+                            const imgBytes = Buffer.from(base64Data, 'base64');
+                            const image = isPng ? await pdfDoc.embedPng(imgBytes) : await pdfDoc.embedJpg(imgBytes);
+                            
+                            let drawW = image.width * 0.3;
+                            let drawH = image.height * 0.3;
+                            
+                            // Adjust size if frontend provided proportional bounds
+                            if (meta.wRatio) {
+                                drawW = width * meta.wRatio;
+                                drawH = drawW * (image.height / image.width);
+                            } else if (meta.w && meta.h) {
+                                const scaleX = meta.w / image.width;
+                                const scaleY = meta.h / image.height;
+                                const scale = Math.min(scaleX, scaleY);
+                                drawW = image.width * scale;
+                                drawH = image.height * scale;
+                            }
+                            
+                            page.drawImage(image, {
+                                x: Math.max(0, xPos - drawW / 2),
+                                y: Math.max(0, yPos - drawH / 2),
+                                width: drawW,
+                                height: drawH,
+                            });
+                        } catch (err) {
+                            console.error('Error drawing dynamic image:', err);
+                        }
+                    }
+                }
+                
+                const modifiedBytes = await pdfDoc.save();
+                outputBuffer = Buffer.from(modifiedBytes);
+            }
+        }
+
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
-        res.send(document.file_data);
+        res.send(outputBuffer);
     } catch (error) {
         console.error('Error streaming document:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -195,7 +262,7 @@ export const streamDocument = async (req, res) => {
 export const addSignature = async (req, res) => {
     try {
         const { documentId } = req.params;
-        const { pageNumber = 1, x, y, signerId = null } = req.body;
+        const { pageNumber = 1, x, y, signerId = null, type = 'signature', metadata = null } = req.body;
 
         if (typeof x === 'undefined' || typeof y === 'undefined') {
             return res.status(400).json({ error: 'Missing x or y coordinate' });
@@ -216,11 +283,35 @@ export const addSignature = async (req, res) => {
             pageNumber,
             x,
             y,
+            type,
+            metadata
         });
 
         res.status(201).json({ signature });
     } catch (error) {
         console.error('Error adding signature placeholder:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+export const updateSignatureCoords = async (req, res) => {
+    try {
+        const { documentId, signatureId } = req.params;
+        const { pageNumber, x, y, metadata } = req.body;
+
+        const document = await findUserDocument(documentId, req.user.userId);
+        if (!document) {
+            return res.status(404).json({ error: 'Document not found' });
+        }
+
+        const updatedSignature = await updateSignatureCoordinates(signatureId, { pageNumber, x, y, metadata });
+        if (!updatedSignature) {
+            return res.status(404).json({ error: 'Signature not found' });
+        }
+
+        res.status(200).json({ signature: updatedSignature });
+    } catch (error) {
+        console.error('Error updating signature coords:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -238,6 +329,29 @@ export const getSignatures = async (req, res) => {
         res.status(200).json({ signatures });
     } catch (error) {
         console.error('Error fetching signatures:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+export const removeSignature = async (req, res) => {
+    try {
+        const { documentId, signatureId } = req.params;
+
+        // Verify ownership
+        const document = await findUserDocument(documentId, req.user.userId);
+        if (!document) {
+            return res.status(404).json({ error: 'Document not found' });
+        }
+
+        const signature = await getSignatureById(signatureId);
+        if (!signature || signature.document_id !== documentId) {
+            return res.status(404).json({ error: 'Signature not found on this document' });
+        }
+
+        await deleteSignature(signatureId);
+        res.status(200).json({ message: 'Signature deleted successfully' });
+    } catch (error) {
+        console.error('Error removing signature:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -308,7 +422,7 @@ export const signWithToken = async (req, res) => {
             return res.status(401).json({ error: 'Invalid or expired token' });
         }
 
-        const { signatureText = 'Signed', signerName = null } = req.body || {};
+        const { signerName = null, fieldType = 'signature', fieldText = '', fieldFont = 'Inter', signatureImage = null } = req.body || {};
 
         const signature = await getSignatureById(payload.signatureId);
         if (!signature) return res.status(404).json({ error: 'Signature not found' });
@@ -319,28 +433,173 @@ export const signWithToken = async (req, res) => {
         const document = docResult.rows[0];
         if (!document.file_data) return res.status(404).json({ error: 'Document content missing' });
 
-        const pdfDoc = await PDFDocument.load(document.file_data);
+        let pdfDoc;
+        try {
+            pdfDoc = await PDFDocument.load(document.file_data, { ignoreEncryption: true });
+        } catch (loadErr) {
+            console.error('PDF load error:', loadErr);
+            return res.status(422).json({ error: 'Unable to process PDF file' });
+        }
 
-        const pageIndex = Math.max(0, signature.page_number - 1);
+        const pageIndex = Math.max(0, (signature.page_number || 1) - 1);
         const page = pdfDoc.getPage(pageIndex);
         const { width, height } = page.getSize();
 
         const xPercent = Number(signature.x);
         const yPercent = Number(signature.y);
+        const xPos = (xPercent / 100) * width;
+        const yPos = height - (yPercent / 100) * height;
 
-        const x = (xPercent / 100) * width;
-        const y = height - (yPercent / 100) * height;
+        // Determine what to actually render based on field type
+        const type = fieldType || signature.type || 'signature';
+        const meta = signature.metadata || {};
+        const resolvedText = fieldText || meta.text || '';
 
         const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-        const fontSize = 14;
 
-        page.drawText(signerName ? `${signerName} — ${signatureText}` : signatureText, {
-            x: x - 10,
-            y: y - (fontSize / 2),
-            size: fontSize,
-            font,
-            color: rgb(0.1, 0.1, 0.1),
-        });
+        const safeName = String(signerName || 'Signed').replace(/[^\x00-\xFF]/g, '');
+        const safeText = String(resolvedText || signerName || 'Signed').replace(/[^\x00-\xFF]/g, '');
+        const safeDate = new Date().toLocaleDateString('en-GB'); // dd/mm/yyyy
+
+        const hexToRgb = (hex) => {
+            if (!hex) return rgb(0.1, 0.1, 0.1);
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result 
+                ? rgb(parseInt(result[1], 16) / 255, parseInt(result[2], 16) / 255, parseInt(result[3], 16) / 255)
+                : rgb(0.1, 0.1, 0.1);
+        };
+        const fieldColor = hexToRgb(meta.color);
+
+        // Helper to draw base64 images
+        const drawBase64Image = async (base64Str, defaultScale = 0.3) => {
+            try {
+                const isPng = base64Str.startsWith('data:image/png');
+                const isJpg = base64Str.startsWith('data:image/jpeg') || base64Str.startsWith('data:image/jpg');
+                if (!isPng && !isJpg) return false;
+                
+                const base64Data = base64Str.split(',')[1];
+                const imgBytes = Buffer.from(base64Data, 'base64');
+                const image = isPng ? await pdfDoc.embedPng(imgBytes) : await pdfDoc.embedJpg(imgBytes);
+                
+                // If the frontend stored proportional bounds or dimensions in meta, respect them
+                // Otherwise fallback to defaultScale
+                let drawW = image.width * defaultScale;
+                let drawH = image.height * defaultScale;
+                if (meta.wRatio) {
+                    drawW = width * meta.wRatio;
+                    drawH = drawW * (image.height / image.width);
+                } else if (meta.w && meta.h) {
+                    // Fit within the field bounds
+                    const scaleX = meta.w / image.width;
+                    const scaleY = meta.h / image.height;
+                    const scale = Math.min(scaleX, scaleY);
+                    drawW = image.width * scale;
+                    drawH = image.height * scale;
+                }
+
+                page.drawImage(image, {
+                    x: Math.max(0, xPos - drawW / 2),
+                    y: Math.max(0, yPos - drawH / 2),
+                    width: drawW,
+                    height: drawH,
+                });
+                return true;
+            } catch (err) {
+                console.error('Error drawing image:', err);
+                return false;
+            }
+        };
+
+        // If the frontend passed a generated PNG image for this field, ALWAYS use it!
+        // This guarantees that the PDF export perfectly matches the web UI fonts, colors, and SVGs.
+        if (signatureImage && await drawBase64Image(signatureImage, 0.3)) {
+            // Successfully drew the exact frontend representation of the field
+        } 
+        else if (type === 'signature') {
+            if (meta.drawingImage && await drawBase64Image(meta.drawingImage, 0.3)) {
+                // Successfully drew the canvas image
+            } else {
+                // Signature text fallback
+                const sigFont = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
+                const fontSize = 18;
+                page.drawText(safeName, {
+                    x: Math.max(0, xPos - 40),
+                    y: Math.max(0, yPos - (fontSize / 2)),
+                    size: fontSize,
+                    font: sigFont,
+                    color: fieldColor,
+                });
+            }
+        } else if (type === 'initials') {
+            if (meta.drawingImage && await drawBase64Image(meta.drawingImage, 0.3)) {
+                // Successfully drew the initials canvas image
+            } else {
+                const initials = meta.text || (signerName ? signerName.split(' ').map(p => p[0]).join('').toUpperCase() : 'ME');
+                const safeInitials = String(initials).replace(/[^\x00-\xFF]/g, '');
+                const fontSize = 16;
+                const sigFont = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
+                page.drawText(safeInitials, {
+                    x: Math.max(0, xPos - 10),
+                    y: Math.max(0, yPos - (fontSize / 2)),
+                    size: fontSize,
+                    font: sigFont,
+                    color: fieldColor,
+                });
+            }
+        } else if (type === 'name') {
+            const fontSize = 12;
+            page.drawText(safeName, {
+                x: Math.max(0, xPos - 30),
+                y: Math.max(0, yPos - (fontSize / 2)),
+                size: fontSize,
+                font,
+                color: fieldColor,
+            });
+        } else if (type === 'date') {
+            const fontSize = 11;
+            page.drawText(safeDate, {
+                x: Math.max(0, xPos - 20),
+                y: Math.max(0, yPos - (fontSize / 2)),
+                size: fontSize,
+                font,
+                color: fieldColor,
+            });
+        } else if (type === 'text') {
+            const displayText = safeText !== 'Double click to edit' ? safeText : '';
+            if (displayText) {
+                const fontSize = 11;
+                page.drawText(displayText, {
+                    x: Math.max(0, xPos - 20),
+                    y: Math.max(0, yPos - (fontSize / 2)),
+                    size: fontSize,
+                    font,
+                    color: fieldColor,
+                });
+            }
+        } else if (type === 'stamp') {
+            if (meta.image && await drawBase64Image(meta.image, 0.4)) {
+                // Successfully drew the stamp image
+            } else {
+                const stampText = safeText && safeText !== 'Stamp Placeholder' ? safeText : safeName;
+                const fontSize = 11;
+                page.drawText(`[STAMP] ${stampText}`, {
+                    x: Math.max(0, xPos - 30),
+                    y: Math.max(0, yPos - (fontSize / 2)),
+                    size: fontSize,
+                    font,
+                    color: fieldColor,
+                });
+            }
+        } else {
+            // Fallback
+            page.drawText(safeName, {
+                x: Math.max(0, xPos - 10),
+                y: Math.max(0, yPos - 7),
+                size: 12,
+                font,
+                color: fieldColor,
+            });
+        }
 
         const modifiedBytes = await pdfDoc.save();
 
@@ -351,6 +610,6 @@ export const signWithToken = async (req, res) => {
         res.status(200).json({ message: 'Document signed successfully' });
     } catch (err) {
         console.error('Error signing document:', err);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ error: 'Internal server error', detail: err.message });
     }
 };
