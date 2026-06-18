@@ -10,7 +10,7 @@ import { initDb } from './db.js';
 dotenv.config();
 
 // Initialize Database
-initDb();
+await initDb();
 
 const app = express();
 app.use(cors({
