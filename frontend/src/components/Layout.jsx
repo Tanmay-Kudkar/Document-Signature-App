@@ -1,28 +1,61 @@
 import React, { useRef, useState } from 'react';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
-import { uploadDocument } from '../lib/documents';
+import { uploadDocument, saveSeveralPeopleConfig } from '../lib/documents';
 import NeonSweepButton from '../components/NeonSweepButton';
+import { PenTool, ChevronDown, LayoutGrid, Menu, X } from 'lucide-react';
 
-/* ── ilovepdf-style top navbar ── */
+/* ==========================================================================
+ * 🚀 COMPONENT: Layout
+ * --------------------------------------------------------------------------
+ * This is the main application wrapper. It provides the top navigation bar,
+ * responsive mobile menu, and a hidden global file input for handling
+ * PDF uploads. It passes the upload context down to its child routes.
+ * ========================================================================== */
 export default function Layout() {
   const fileInputRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const navigate = useNavigate();
 
+  /* ------------------------------------------------------------------------
+   * 📂 FUNCTION: handleFileChange
+   * ------------------------------------------------------------------------
+   * Captures the file selected by the user via the hidden input.
+   * ------------------------------------------------------------------------ */
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       setSelectedFile(e.target.files[0]);
     }
   };
 
+  /* ------------------------------------------------------------------------
+   * 🖱️ FUNCTION: handleTriggerUpload
+   * ------------------------------------------------------------------------
+   * Programmatically clicks the hidden file input to open the file browser.
+   * ------------------------------------------------------------------------ */
   const handleTriggerUpload = () => fileInputRef.current?.click();
 
+  /* ------------------------------------------------------------------------
+   * 🚀 FUNCTION: handleUploadAndNavigate
+   * ------------------------------------------------------------------------
+   * Uploads the selected PDF to the backend and navigates the user to the
+   * Dashboard editor with the new document's context.
+   * ------------------------------------------------------------------------ */
   const handleUploadAndNavigate = async () => {
     if (!selectedFile) { navigate('/dashboard'); return; }
     try {
       setIsUploading(true);
       const document = await uploadDocument(selectedFile);
+      
+      const signingMode = localStorage.getItem('signingMode');
+      if (signingMode === 'several_people') {
+        const configStr = localStorage.getItem('severalPeopleConfig');
+        if (configStr) {
+          const config = JSON.parse(configStr);
+          await saveSeveralPeopleConfig(document.id, config.receivers, config.settings);
+        }
+      }
+
       setSelectedFile(null);
       const isGuest = !localStorage.getItem('token');
       navigate('/dashboard', {
@@ -43,18 +76,19 @@ export default function Layout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const isLoggedIn = !!localStorage.getItem('token');
 
+  /* ==========================================================================
+   * 🎨 RENDER UI
+   * ========================================================================== */
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans flex flex-col">
-      {/* ── Navbar ── */}
+      {/* ── TOP NAVBAR ── */}
       <header className="sticky top-0 z-50 bg-white border-b border-gray-200" style={{ height: 56 }}>
         <div className="mx-auto max-w-[1400px] px-4 sm:px-6 h-full flex items-center gap-4">
 
-          {/* Logo */}
+          {/* Logo Section */}
           <Link to="/" className="flex items-center shrink-0 mr-2 select-none gap-2 hover:opacity-90 transition" style={{ minWidth: 110 }}>
             <div className="bg-[#e8222c] p-1.5 rounded-lg shadow-sm flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M14 2H6C4.9 2 4.01 2.9 4.01 4L4 20C4 21.1 4.89 22 5.99 22H18C19.1 22 20 21.1 20 20V8L14 2ZM18 20H6V4H13V9H18V20ZM16 11V18.1L13.9 16L11.1 18.1V11H16Z" />
-              </svg>
+              <PenTool className="w-5 h-5 text-white" />
             </div>
             <span style={{
               fontWeight: 900,
@@ -67,7 +101,7 @@ export default function Layout() {
             </span>
           </Link>
 
-          {/* Nav links (Desktop) */}
+          {/* Nav Links (Desktop) */}
           <nav className="hidden lg:flex items-center gap-0">
             {['MERGE PDF', 'SPLIT PDF', 'COMPRESS PDF'].map(label => (
               <a
@@ -85,16 +119,14 @@ export default function Layout() {
                 className="flex items-center gap-1 px-4 py-1 text-[13px] font-semibold text-gray-700 hover:text-gray-900 transition-colors tracking-wide whitespace-nowrap"
               >
                 {label}
-                <svg className="w-3 h-3 ml-0.5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
-                </svg>
+                <ChevronDown className="w-3 h-3 ml-0.5 opacity-60" />
               </button>
             ))}
           </nav>
 
           <div className="flex-1" />
 
-          {/* Right actions (Desktop) */}
+          {/* Right Actions (Desktop) */}
           <div className="hidden md:flex items-center gap-2">
             {isLoggedIn ? (
               <>
@@ -136,13 +168,9 @@ export default function Layout() {
               </>
             )}
 
-            {/* 3×3 grid dots icon */}
+            {/* Application Grid Icon */}
             <button className="ml-1 p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <circle cx="5" cy="5" r="2" /><circle cx="12" cy="5" r="2" /><circle cx="19" cy="5" r="2" />
-                <circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" />
-                <circle cx="5" cy="19" r="2" /><circle cx="12" cy="19" r="2" /><circle cx="19" cy="19" r="2" />
-              </svg>
+              <LayoutGrid className="w-5 h-5" />
             </button>
           </div>
 
@@ -151,20 +179,7 @@ export default function Layout() {
             className="md:hidden p-2 text-gray-600 hover:bg-gray-100 rounded-md transition"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
           >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              {isMobileMenuOpen ? (
-                <>
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </>
-              ) : (
-                <>
-                  <line x1="3" y1="12" x2="21" y2="12" />
-                  <line x1="3" y1="6" x2="21" y2="6" />
-                  <line x1="3" y1="18" x2="21" y2="18" />
-                </>
-              )}
-            </svg>
+            {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
           </button>
         </div>
 
@@ -233,6 +248,7 @@ export default function Layout() {
         className="hidden"
       />
 
+      {/* Main Outlet for routing */}
       <main className="flex-1">
         <Outlet context={{
           fileInputRef,

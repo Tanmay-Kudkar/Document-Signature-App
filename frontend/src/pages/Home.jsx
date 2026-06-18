@@ -1,8 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
 import NeonSweepButton from '../components/NeonSweepButton';
-import { savePreferences } from '../lib/preferences';
 
+import SeveralPeopleModal from '../components/SeveralPeopleModal';
+import { 
+  UserPen, Users, User, PenTool, BadgeCheck, 
+  Type, UploadCloud, Link as LinkIcon 
+} from 'lucide-react';
+
+/* ==========================================================================
+ * 🏠 COMPONENT: Home
+ * --------------------------------------------------------------------------
+ * The main entry point for users to upload documents. Supports direct file 
+ * uploads, drag-and-drop, and URL fetching. Once a document is selected, 
+ * it prompts the user to choose the signing mode ("Only me" or "Several people")
+ * and captures their default signature configuration.
+ * ========================================================================== */
 export default function Home() {
   const {
     fileInputRef,
@@ -19,6 +32,8 @@ export default function Home() {
   const [urlInput, setUrlInput] = useState('');
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [urlError, setUrlError] = useState('');
+
+  const [showSeveralPeopleModal, setShowSeveralPeopleModal] = useState(false);
 
   const [showSigConfig, setShowSigConfig] = useState(false);
   const [modalTab, setModalTab] = useState('type'); // type | draw | upload
@@ -108,6 +123,13 @@ export default function Home() {
     // Persist to database (best-effort, no await needed here)
     savePreferences({ sig_config: finalConfig });
     setShowSigConfig(false);
+    handleUploadAndNavigate();
+  };
+
+  const handleSeveralPeopleApply = (config) => {
+    localStorage.setItem('severalPeopleConfig', JSON.stringify(config));
+    localStorage.setItem('signingMode', 'several_people');
+    setShowSeveralPeopleModal(false);
     handleUploadAndNavigate();
   };
 
@@ -291,18 +313,10 @@ export default function Home() {
               >
                 {/* Illustration */}
                 <div
-                  className="flex items-center justify-center mb-6 rounded-2xl overflow-hidden"
+                  className="flex items-center justify-center mb-6 rounded-2xl overflow-hidden text-[#4a7fc1]"
                   style={{ width: 140, height: 130, background: '#dce8f5' }}
                 >
-                  <img
-                    src="/signing-illustration.png"
-                    alt="Only me"
-                    className="w-28 h-28 object-contain"
-                    onError={(e) => {
-                      e.target.style.display = 'none';
-                      e.target.parentNode.innerHTML = `<svg viewBox="0 0 80 80" width="80" height="80" fill="none"><rect width="80" height="80" rx="16" fill="#dce8f5"/><rect x="20" y="12" width="40" height="52" rx="4" fill="white" stroke="#b3cee8" strokeWidth="2"/><line x1="28" y1="24" x2="52" y2="24" stroke="#b3cee8" strokeWidth="2"/><line x1="28" y1="32" x2="52" y2="32" stroke="#b3cee8" strokeWidth="2"/><line x1="28" y1="40" x2="44" y2="40" stroke="#b3cee8" strokeWidth="2"/><path d="M24 56 Q32 48 40 54 Q46 44 54 52" stroke="#4a7fc1" strokeWidth="2.5" fill="none" strokeLinecap="round"/></svg>`;
-                    }}
-                  />
+                  <UserPen className="w-16 h-16" strokeWidth={1.5} />
                 </div>
 
                 <NeonSweepButton
@@ -319,33 +333,13 @@ export default function Home() {
               <div
                 className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-8 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition group"
                 style={{ background: '#fafafa' }}
-                onClick={() => { localStorage.setItem('signingMode', 'several_people'); handleUploadAndNavigate(); }}
+                onClick={() => setShowSeveralPeopleModal(true)}
               >
                 <div
-                  className="flex items-center justify-center mb-6 rounded-2xl overflow-hidden"
+                  className="flex items-center justify-center mb-6 rounded-2xl overflow-hidden text-[#50b383]"
                   style={{ width: 140, height: 130, background: '#e8f5f0' }}
                 >
-                  <svg viewBox="0 0 80 80" width="80" height="80" fill="none">
-                    {/* Top person */}
-                    <circle cx="40" cy="12" r="7" fill="#4a7fc1" opacity="0.9" />
-                    <ellipse cx="40" cy="26" rx="10" ry="7" fill="#4a7fc1" opacity="0.9" />
-                    {/* Left person */}
-                    <circle cx="14" cy="36" r="6" fill="#e8702a" opacity="0.9" />
-                    <ellipse cx="14" cy="48" rx="9" ry="6" fill="#e8702a" opacity="0.9" />
-                    {/* Right person */}
-                    <circle cx="66" cy="36" r="6" fill="#50b383" opacity="0.9" />
-                    <ellipse cx="66" cy="48" rx="9" ry="6" fill="#50b383" opacity="0.9" />
-                    {/* Bottom person */}
-                    <circle cx="40" cy="60" r="6" fill="#9b59b6" opacity="0.9" />
-                    <ellipse cx="40" cy="72" rx="9" ry="6" fill="#9b59b6" opacity="0.9" />
-                    {/* Table circle */}
-                    <circle cx="40" cy="40" r="16" fill="#d4ebe2" opacity="0.6" />
-                    {/* Document on table */}
-                    <rect x="34" y="33" width="12" height="14" rx="1.5" fill="white" stroke="#b8d4c8" strokeWidth="1" />
-                    <line x1="37" y1="37" x2="43" y2="37" stroke="#b8d4c8" strokeWidth="1" />
-                    <line x1="37" y1="40" x2="43" y2="40" stroke="#b8d4c8" strokeWidth="1" />
-                    <line x1="37" y1="43" x2="41" y2="43" stroke="#b8d4c8" strokeWidth="1" />
-                  </svg>
+                  <Users className="w-16 h-16" strokeWidth={1.5} />
                 </div>
 
                 <NeonSweepButton
@@ -409,9 +403,7 @@ export default function Home() {
                 className="shrink-0 flex items-center justify-center rounded-full mt-5"
                 style={{ width: 44, height: 44, border: '2px solid #e8222c' }}
               >
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="#e8222c" opacity="0.6">
-                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                </svg>
+                <User className="w-6 h-6 text-[#e8222c] opacity-60" />
               </div>
 
               {/* Full name */}
@@ -450,13 +442,13 @@ export default function Home() {
             <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
               {[
                 { id: 'type', label: 'Signature', icon: (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                  <PenTool className="w-4 h-4" />
                 )},
                 { id: 'initials_tab', label: 'Initials', icon: (
                   <span className="font-bold" style={{ fontSize: 12 }}>AC</span>
                 )},
                 { id: 'stamp', label: 'Company Stamp', icon: (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+                  <BadgeCheck className="w-4 h-4" />
                 )},
               ].map(tab => (
                 <button
@@ -491,7 +483,7 @@ export default function Home() {
                     className="flex items-center justify-center w-9 h-9 rounded-lg transition"
                     style={{ background: modalTab === 'type' ? '#fff' : 'transparent', border: modalTab === 'type' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M5 17v2h14v-2H5zm4.5-4.2h5l.9 2.2h2.1L12.75 4h-1.5L6.5 15h2.1l.9-2.2zM12 5.98L13.87 11h-3.74L12 5.98z"/></svg>
+                    <Type className="w-4 h-4" />
                   </button>
                   {/* Draw icon */}
                   <button
@@ -500,7 +492,7 @@ export default function Home() {
                     className="flex items-center justify-center w-9 h-9 rounded-lg transition"
                     style={{ background: modalTab === 'draw' ? '#fff' : 'transparent', border: modalTab === 'draw' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                    <PenTool className="w-4 h-4" />
                   </button>
                   {/* Upload icon */}
                   <button
@@ -509,7 +501,7 @@ export default function Home() {
                     className="flex items-center justify-center w-9 h-9 rounded-lg transition"
                     style={{ background: modalTab === 'upload' ? '#fff' : 'transparent', border: modalTab === 'upload' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                    <UploadCloud className="w-4 h-4" />
                   </button>
                 </div>
               )}
@@ -580,9 +572,7 @@ export default function Home() {
               {modalTab === 'upload' && (
                 <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
                   <div className="text-center">
-                    <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" opacity="0.3" className="mx-auto mb-2">
-                      <path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/>
-                    </svg>
+                    <UploadCloud className="w-10 h-10 opacity-30 mx-auto mb-2" />
                     <p className="text-sm">Upload signature coming soon</p>
                   </div>
                 </div>
@@ -592,9 +582,7 @@ export default function Home() {
               {(modalTab === 'initials_tab' || modalTab === 'stamp') && (
                 <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
                   <div className="text-center">
-                    <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" opacity="0.3" className="mx-auto mb-2">
-                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                    </svg>
+                    <BadgeCheck className="w-10 h-10 opacity-30 mx-auto mb-2" />
                     <p className="text-sm">Coming soon</p>
                   </div>
                 </div>
@@ -652,6 +640,13 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+
+      {showSeveralPeopleModal && (
+        <SeveralPeopleModal
+          onCancel={() => setShowSeveralPeopleModal(false)}
+          onApply={handleSeveralPeopleApply}
+        />
       )}
     </>
   );

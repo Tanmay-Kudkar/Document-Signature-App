@@ -14,34 +14,38 @@ import {
   generateSignatureToken,
   deleteDocument,
   updateSignatureCoords,
+  emailSignatureLink,
+  fetchAuditTrail
 } from '../lib/documents';
 import { loadPreferences, savePreferences } from '../lib/preferences';
+import { 
+  GripVertical, PenTool, X, BadgeCheck, ChevronLeft, ChevronRight, 
+  ChevronDown, Download, Trash2, FileText, Upload, FileUp, Check,
+  Share2, Mail, PlayCircle, Lock, User, Type, UploadCloud, Clock,
+  Eye, CheckCircle, XCircle, Settings, Globe
+} from 'lucide-react';
+
+/* ==========================================================================
+ * 🎛️ COMPONENT: Dashboard
+ * --------------------------------------------------------------------------
+ * The core editor interface for document signing. It renders a 3-panel layout:
+ * 1. Left: Document thumbnail list & page navigation.
+ * 2. Center: PDF canvas (via react-pdf) supporting drag-and-drop field placement,
+ *            resizing, text editing, and freehand signature rendering.
+ * 3. Right (conditional): Configuration sidebars or modals.
+ * ========================================================================== */
 
 /* ── helpers ── */
-const DragHandle = () => (
-  <svg width="14" height="14" viewBox="0 0 14 14" fill="#9ca3af">
-    <circle cx="4" cy="3" r="1.2" /><circle cx="4" cy="7" r="1.2" /><circle cx="4" cy="11" r="1.2" />
-    <circle cx="10" cy="3" r="1.2" /><circle cx="10" cy="7" r="1.2" /><circle cx="10" cy="11" r="1.2" />
-  </svg>
-);
+const DragHandle = () => <GripVertical className="w-3.5 h-3.5 text-gray-400" />;
+
 const PencilIcon = ({ color = '#4a7fc1', size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
-  </svg>
-);
-const XIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-  </svg>
+  <PenTool color={color} size={size} />
 );
 
+const XIcon = () => <X size={15} />;
+
 const StampIcon = ({ color = '#6529f1ff', size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 22h14" />
-    <path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11a2.5 2.5 0 0 0-1.77.73L3 15.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2.5z" />
-    <path d="M12 13V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v9" />
-    <path d="M18 13V8.5a2 2 0 0 0-2-2h-4v6.5" />
-  </svg>
+  <BadgeCheck color={color} size={size} />
 );
 
 const fieldDefinitions = [
@@ -116,6 +120,19 @@ export default function Dashboard() {
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
   const [deletingId, setDeletingId] = useState(null);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
+
+  // Status Filter
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  // Email Modal
+  const [emailModal, setEmailModal] = useState(null);
+  const [emailAddress, setEmailAddress] = useState('');
+  const [isEmailing, setIsEmailing] = useState(false);
+
+  // Audit Trail Modal
+  const [showAuditModal, setShowAuditModal] = useState(false);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
 
   // Password modal state
   const [pwModal, setPwModal] = useState(null); // { callback, reason }
@@ -240,6 +257,16 @@ export default function Dashboard() {
   // Local signature config – kept in state so updates trigger re-renders
   const [sigConfig, setSigConfig] = useState(() => JSON.parse(localStorage.getItem('signatureConfig') || '{"name":"","initials":"","font":"Dancing Script","color":"#1a1a1a"}'));
   
+  const [activeReceiverId, setActiveReceiverId] = useState(null);
+
+  useEffect(() => {
+    if (!isOnlyMe && selectedDocument?.receivers?.length > 0) {
+      if (!selectedDocument.receivers.some(r => r.id === activeReceiverId)) {
+        setActiveReceiverId(selectedDocument.receivers[0].id);
+      }
+    }
+  }, [selectedDocument, isOnlyMe, activeReceiverId]);
+  
 
 
   /* ── resize observer ── */
@@ -325,12 +352,17 @@ export default function Dashboard() {
         setIsLoadingDocuments(true);
         const docs = await listDocuments();
         if (!mounted) return;
-        setDocuments(docs);
+        
+        // Filter documents to ONLY show ones matching the current dashboard mode
+        const currentMode = localStorage.getItem('signingMode') || 'only_me';
+        const filteredDocs = docs.filter(d => (d.signingMode || 'only_me') === currentMode);
+        
+        setDocuments(filteredDocs);
         const prefId = !stateProcessedRef.current ? location.state?.uploadedDocumentId : null;
         setSelectedDocumentId(cur => {
-          if (prefId && docs.some(d => d.id === prefId)) return prefId;
-          if (cur  && docs.some(d => d.id === cur))    return cur;
-          return docs[0]?.id || null;
+          if (prefId && filteredDocs.some(d => d.id === prefId)) return prefId;
+          if (cur  && filteredDocs.some(d => d.id === cur))    return cur;
+          return filteredDocs[0]?.id || null;
         });
         if (!stateProcessedRef.current) {
           stateProcessedRef.current = true;
@@ -453,14 +485,34 @@ export default function Dashboard() {
     const initialSizeMeta = {
       w: dSize.w,
       h: dSize.h,
-      wRatio: dSize.w / rect.width
+      wRatio: dSize.w / rect.width,
+      receiverId: (!isOnlyMe && activeReceiverId) ? activeReceiverId : null
     };
-    if (type === 'signature') metadata = { ...initialSizeMeta, text: sigConfig.name, font: sigConfig.font, color: fieldColors['signature'] || sigConfig.color || defaultSigColor, drawingImage: sigConfig.drawingImage };
-    else if (type === 'initials') metadata = { ...initialSizeMeta, text: dropInitials, font: sigConfig.font, color: fieldColors['initials'] || sigConfig.color || defaultInitColor };
-    else if (type === 'name') metadata = { ...initialSizeMeta, text: sigConfig.name, font: 'Inter', color: fieldColor };
-    else if (type === 'date') metadata = { ...initialSizeMeta, text: new Date().toLocaleDateString(), font: 'Inter', color: fieldColor };
-    else if (type === 'text') metadata = { ...initialSizeMeta, text: 'Double click to edit', font: 'Inter', color: fieldColor };
-    else if (type === 'stamp') {
+
+    let receiverInfo = null;
+    let rColor = null;
+    if (!isOnlyMe && activeReceiverId && selectedDocument?.receivers) {
+      const idx = selectedDocument.receivers.findIndex(r => r.id === activeReceiverId);
+      if (idx >= 0) {
+        receiverInfo = selectedDocument.receivers[idx];
+        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
+        rColor = colors[idx % colors.length];
+      }
+    }
+
+    const getReceiverText = (baseLabel) => receiverInfo ? `${receiverInfo.name}'s ${baseLabel}` : '';
+
+    if (type === 'signature') {
+      metadata = { ...initialSizeMeta, text: isOnlyMe ? sigConfig.name : getReceiverText('Signature'), font: isOnlyMe ? sigConfig.font : 'Inter', color: isOnlyMe ? (fieldColors['signature'] || sigConfig.color || defaultSigColor) : (rColor || defaultSigColor), drawingImage: isOnlyMe ? sigConfig.drawingImage : null };
+    } else if (type === 'initials') {
+      metadata = { ...initialSizeMeta, text: isOnlyMe ? dropInitials : getReceiverText('Initials'), font: isOnlyMe ? sigConfig.font : 'Inter', color: isOnlyMe ? (fieldColors['initials'] || sigConfig.color || defaultInitColor) : (rColor || defaultInitColor) };
+    } else if (type === 'name') {
+      metadata = { ...initialSizeMeta, text: isOnlyMe ? sigConfig.name : getReceiverText('Name'), font: 'Inter', color: isOnlyMe ? fieldColor : (rColor || fieldColor) };
+    } else if (type === 'date') {
+      metadata = { ...initialSizeMeta, text: isOnlyMe ? new Date().toLocaleDateString() : getReceiverText('Date'), font: 'Inter', color: isOnlyMe ? fieldColor : (rColor || fieldColor) };
+    } else if (type === 'text') {
+      metadata = { ...initialSizeMeta, text: isOnlyMe ? 'Double click to edit' : getReceiverText('Text'), font: 'Inter', color: isOnlyMe ? fieldColor : (rColor || fieldColor) };
+    } else if (type === 'stamp') {
       // Show stamp config modal instead of placing immediately
       setStampCompanyName('');
       setStampImageB64(null);
@@ -770,20 +822,22 @@ export default function Dashboard() {
     setSigEditFont(meta.font || sigConfig.font || 'greatvibes');
     // Pre-fill color: stored field color → sigConfig color (chosen in Home) → black
     const isSigOrInitials = sig.type === 'signature' || sig.type === 'initials';
-    setSigEditColor(meta.color || (isSigOrInitials ? (sigConfig.color || '#1a1a1a') : '#1a1a1a'));
-    // For initials: always compute from full name so changes to name are reflected
+    setSigEditColor(meta.color || (isSigOrInitials ? (isOnlyMe ? sigConfig.color : '#1a1a1a') : '#1a1a1a'));
+    // For initials: compute from full name so changes to name are reflected (Only Me)
     let textVal = meta.text || '';
-    const fullName = sigConfig.name || '';
-    if (sig.type === 'initials') {
-      const computedInitials = fullName.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('');
-      // Use computed initials if:
-      //  - field has no text, OR
-      //  - stored text is a single letter but name has multiple words (stale data)
-      if (!textVal || (textVal.length < computedInitials.length && computedInitials.length > 1)) {
-        textVal = computedInitials;
+    if (isOnlyMe) {
+      const fullName = sigConfig.name || '';
+      if (sig.type === 'initials') {
+        const computedInitials = fullName.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('');
+        // Use computed initials if:
+        //  - field has no text, OR
+        //  - stored text is a single letter but name has multiple words (stale data)
+        if (!textVal || (textVal.length < computedInitials.length && computedInitials.length > 1)) {
+          textVal = computedInitials;
+        }
+      } else if (!textVal) {
+        textVal = fullName;
       }
-    } else if (!textVal) {
-      textVal = fullName;
     }
     setSigEditText(textVal);
     setSigEditModal({ sig, tab: 'type' });
@@ -1096,11 +1150,11 @@ export default function Dashboard() {
           <div className="flex items-center bg-gray-100 rounded" style={{ height: 30 }}>
             <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage <= 1}
               className="px-2 h-full flex items-center text-gray-600 hover:bg-gray-200 disabled:opacity-30 rounded-l transition">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M6 3l5 6H1z" /></svg>
+              <ChevronLeft className="w-3.5 h-3.5" />
             </button>
             <button onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))} disabled={currentPage >= numPages}
               className="px-2 h-full flex items-center text-gray-600 hover:bg-gray-200 disabled:opacity-30 rounded-r transition">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M6 9L1 3h10z" /></svg>
+              <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
           <div className="flex items-center gap-1 text-sm text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white">
@@ -1116,9 +1170,7 @@ export default function Dashboard() {
                 <option key={doc.id} value={doc.id}>{doc.originalName}</option>
               ))}
             </select>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="#9ca3af" className="absolute right-2.5 pointer-events-none">
-              <path d="M6 8L2 4h8z" />
-            </svg>
+            <ChevronDown className="absolute right-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
           </div>
           <div className="flex-1" />
           <div className="flex items-center gap-2">
@@ -1126,7 +1178,7 @@ export default function Dashboard() {
               <button onClick={() => handleDownload(true)} disabled={isOpeningFile}
                 className="flex items-center gap-1.5 text-xs font-bold text-white px-3 py-1.5 rounded-lg transition hover:opacity-90"
                 style={{ background: '#22c55e' }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" /></svg>
+                <Download className="w-3.5 h-3.5" />
                 Download Signed
               </button>
             )}
@@ -1174,7 +1226,7 @@ export default function Dashboard() {
 
                   {checkedDocumentIds.length > 0 && (
                     <button onClick={() => setShowBulkDeleteModal(true)} className="w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                      <Trash2 className="w-3.5 h-3.5" />
                       Delete Selected ({checkedDocumentIds.length})
                     </button>
                   )}
@@ -1194,9 +1246,7 @@ export default function Dashboard() {
                         <button onClick={() => setSelectedDocumentId(doc.id)}
                           className="flex-1 text-left p-2.5 text-xs flex flex-col overflow-hidden group">
                           <div className="flex items-center gap-2">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill={isSel ? '#e8222c' : '#9ca3af'} className={`shrink-0 transition-colors ${!isSel ? 'group-hover:fill-gray-500' : ''}`}>
-                              <path d="M14 2H6C4.9 2 4 2.9 4 4v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" />
-                            </svg>
+                            <FileText className={`w-4 h-4 shrink-0 transition-colors ${isSel ? 'text-[#e8222c]' : 'text-[#9ca3af] group-hover:text-gray-500'}`} />
                             <span className={`truncate font-medium transition-colors ${isSel ? 'text-[#e8222c]' : 'text-gray-600 group-hover:text-gray-900'}`}>{doc.originalName}</span>
                           </div>
                           {doc.status === 'signed' && (
@@ -1207,7 +1257,7 @@ export default function Dashboard() {
                     );
                   })}
                   <Link to="/" className="w-full text-center text-[11px] font-bold text-[#e8222c] bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all mt-2 py-2 flex items-center justify-center gap-1.5 shadow-sm">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                    <Upload className="w-3.5 h-3.5" />
                     Upload PDF
                   </Link>
                 </div>
@@ -1247,9 +1297,7 @@ export default function Dashboard() {
           onClick={() => { if (wasDraggingRef.current) return; setSelectedFieldId(null); setEditingFieldId(null); }}>
           {!selectedDocument && !isLoadingDocument ? (
             <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" opacity="0.25">
-                <path d="M14 2H6C4.9 2 4 2.9 4 4v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" />
-              </svg>
+              <FileUp className="w-12 h-12 opacity-25" />
               <p className="text-sm font-medium">Select a document to preview</p>
               <Link to="/" className="text-sm font-bold text-[#e8222c] hover:underline">Upload PDF</Link>
             </div>
@@ -1286,10 +1334,12 @@ export default function Dashboard() {
                 </Document>
               )}
 
-              {/* Signature overlays — click to select, content-only when deselected */}
-              {pageSigs.map(sig => {
+              {/* Signature overlays — click to select, content-only when deselected.
+                  Signed fields are filtered out because their content is baked directly into the underlying PDF image. */}
+              {pageSigs.filter(s => statusFilter === 'all' || s.status === statusFilter).map(sig => {
                 const def = fieldDefinitions.find(d => d.type === sig.type) || fieldDefinitions[0];
                 const meta = sig.metadata || {};
+                const activeColor = (!isOnlyMe && meta.receiverId) ? meta.color : def.color;
                 const isSelected = selectedFieldId === sig.id;
                 const isEditing = editingFieldId === sig.id;
                 const isEditable = sig.type !== 'signature' && sig.type !== 'date' && sig.type !== 'stamp';
@@ -1351,7 +1401,7 @@ export default function Dashboard() {
                       <button onClick={() => handleFieldTextSave(sig)}
                         className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-white"
                         style={{ background: '#10b981' }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                        <Check className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   );
@@ -1393,7 +1443,7 @@ export default function Dashboard() {
                     {sig.status === 'signed' ? (
                       <div className="flex items-center gap-2 rounded px-3 py-1.5 h-full"
                         style={{ background: 'rgba(240, 253, 244, 1)', border: '1.5px solid #86efac' }}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="rgba(34, 197, 94, 1)"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+                        <Check className="w-3.5 h-3.5 text-green-500" strokeWidth={3} />
                         <span className="text-xs font-bold text-green-700">Signed</span>
                       </div>
                     ) : isSelected ? (
@@ -1406,7 +1456,7 @@ export default function Dashboard() {
                               <button onClick={e => handleOpenSigEdit(e, sig)}
                                 className="flex items-center gap-1 text-white text-[10px] font-bold px-2 py-1 rounded"
                                 style={{ background: sig.type === 'initials' ? '#f59e0b' : '#e8222c', fontSize: 10 }}>
-                                <svg width="9" height="9" viewBox="0 0 24 24" fill="white"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                                <PenTool className="w-2.5 h-2.5 text-white" />
                                 Edit
                               </button>
                             )}
@@ -1414,7 +1464,7 @@ export default function Dashboard() {
                               <button onClick={e => handleOpenStampEdit(e, sig)}
                                 className="flex items-center gap-1 text-white text-[10px] font-bold px-2 py-1 rounded"
                                 style={{ background: '#8b5cf6', fontSize: 10 }}>
-                                <svg width="9" height="9" viewBox="0 0 24 24" fill="white"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                                <PenTool className="w-2.5 h-2.5 text-white" />
                                 Edit
                               </button>
                             )}
@@ -1422,17 +1472,25 @@ export default function Dashboard() {
                               <button onClick={e => { e.stopPropagation(); handleFieldDoubleClick(e, sig); }}
                                 className="flex items-center gap-1 text-white text-[10px] font-bold px-2 py-1 rounded"
                                 style={{ background: '#10b981', fontSize: 10 }}>
-                                <svg width="9" height="9" viewBox="0 0 24 24" fill="white"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                                <PenTool className="w-2.5 h-2.5 text-white" />
                                 Edit
                               </button>
                             )}
                             {!isOnlyMe && (
-                              <button onClick={e => { e.stopPropagation(); handleShare(sig); }}
-                                className="flex items-center gap-1 text-white text-[10px] font-bold px-2 py-1 rounded"
-                                style={{ background: '#4a7fc1', fontSize: 10 }}>
-                                <svg width="9" height="9" viewBox="0 0 24 24" fill="white"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
-                                Share
-                              </button>
+                              <>
+                                <button onClick={e => { e.stopPropagation(); handleShare(sig); }}
+                                  className="flex items-center gap-1 text-white text-[10px] font-bold px-2 py-1 rounded"
+                                  style={{ background: '#4a7fc1', fontSize: 10 }}>
+                                  <Share2 className="w-2.5 h-2.5 text-white" />
+                                  Share
+                                </button>
+                                <button onClick={e => { e.stopPropagation(); setEmailModal({ sig }); setEmailAddress(''); }}
+                                  className="flex items-center gap-1 text-white text-[10px] font-bold px-2 py-1 rounded"
+                                  style={{ background: '#f59e0b', fontSize: 10 }}>
+                                  <Mail className="w-2.5 h-2.5 text-white" />
+                                  Email
+                                </button>
+                              </>
                             )}
                             <button onClick={e => { e.stopPropagation(); handleDeleteSig(sig); }}
                               className="flex items-center justify-center w-6 h-6 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-red-500 transition shadow-sm">
@@ -1443,14 +1501,14 @@ export default function Dashboard() {
 
                         {/* Card — semi-transparent so PDF content is always visible behind */}
                         <div className="flex flex-col rounded overflow-hidden w-full h-full"
-                          style={{ background: `${def.bg}bb`, border: `2px solid ${def.color}`,
+                          style={{ background: `${def.bg}bb`, border: `2px solid ${activeColor}`,
                             backdropFilter: 'blur(1px)',
-                            boxShadow: isDragging || isResizing ? '0 10px 24px rgba(0,0,0,0.15)' : `0 0 0 1px ${def.color}33, 0 4px 12px rgba(0,0,0,0.08)` }}>
+                            boxShadow: isDragging || isResizing ? '0 10px 24px rgba(0,0,0,0.15)' : `0 0 0 1px ${activeColor}33, 0 4px 12px rgba(0,0,0,0.08)` }}>
                           {/* Header */}
-                          <div className="shrink-0 flex items-center gap-1 px-1.5 border-b" style={{ height: 16, borderColor: `${def.color}33`, background: `${def.color}22` }}>
+                          <div className="shrink-0 flex items-center gap-1 px-1.5 border-b" style={{ height: 16, borderColor: `${activeColor}33`, background: `${activeColor}22` }}>
                             <DragHandle />
-                            {getFieldIcon(def.type, def.color, 11)}
-                            <span className="font-bold truncate" style={{ color: def.color, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{def.label}</span>
+                            {getFieldIcon(def.type, activeColor, 11)}
+                            <span className="font-bold truncate" style={{ color: activeColor, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{def.label}</span>
                           </div>
                           {/* Content — text scales with height, always centered */}
                           <div className="flex-1 overflow-hidden flex items-center justify-center"
@@ -1474,7 +1532,7 @@ export default function Dashboard() {
                         ].map(({ dir, style }) => (
                           <div key={dir}
                             className="absolute w-3 h-3 bg-white rounded-sm z-30 border-2"
-                            style={{ ...style, borderColor: def.color }}
+                            style={{ ...style, borderColor: activeColor }}
                             onMouseDown={e => handleResizeStart(e, sig, dir)}
                             onClick={e => e.stopPropagation()} />
                         ))}
@@ -1491,7 +1549,7 @@ export default function Dashboard() {
                           paddingLeft: padLeft,
                           paddingRight: padRight,
                         }}
-                        onMouseEnter={e => e.currentTarget.style.border = `1.5px dashed ${def.color}88`}
+                        onMouseEnter={e => e.currentTarget.style.border = `1.5px dashed ${activeColor}88`}
                         onMouseLeave={e => e.currentTarget.style.border = '1.5px solid transparent'}>
                         {renderContent()}
                       </div>
@@ -1513,8 +1571,40 @@ export default function Dashboard() {
             {/* Fields Toolbar */}
             {selectedDocumentId && (
               <div>
+                {!isOnlyMe && selectedDocument?.receivers?.length > 0 && (
+                  <div className="mb-4 bg-gray-50 p-3 rounded-xl border border-gray-200">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-2" style={{ letterSpacing: 0.5 }}>Active Signer</p>
+                    <div className="relative">
+                      <select
+                        value={activeReceiverId || ''}
+                        onChange={(e) => setActiveReceiverId(e.target.value)}
+                        className="w-full appearance-none bg-white border border-gray-300 rounded-lg px-3 py-2 pr-8 text-sm font-medium text-gray-800 outline-none hover:border-[#e8222c] focus:border-[#e8222c] focus:ring-2 focus:ring-[#e8222c]/20 transition cursor-pointer"
+                      >
+                        {selectedDocument.receivers.map((r, idx) => {
+                          const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
+                          const color = colors[idx % colors.length];
+                          return (
+                            <option key={r.id} value={r.id}>{r.name} ({r.email})</option>
+                          );
+                        })}
+                      </select>
+                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                    </div>
+                  </div>
+                )}
+                
                 <div className="flex items-center justify-between mb-1">
                   <p className="text-xs font-semibold text-gray-400 uppercase" style={{ letterSpacing: 0.5 }}>Fields</p>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="text-xs border border-gray-200 rounded px-2 py-1 outline-none text-gray-600 bg-white cursor-pointer hover:border-gray-300"
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="signed">Signed</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
                 </div>
                 <p className="text-[10px] text-gray-400 mb-2" style={{ lineHeight: 1.4 }}>
                   Drag to place · <span className="font-semibold">Double-click to change text color</span>
@@ -1526,7 +1616,7 @@ export default function Dashboard() {
                   value={colorPickingType
                     ? (fieldColors[colorPickingType]
                         || ((colorPickingType === 'signature' || colorPickingType === 'initials')
-                            ? (sigConfig.color || (fieldDefinitions.find(d => d.type === colorPickingType)?.color || '#1a1a1a'))
+                            ? (isOnlyMe ? sigConfig.color : (fieldDefinitions.find(d => d.type === colorPickingType)?.color || '#1a1a1a'))
                             : (fieldDefinitions.find(d => d.type === colorPickingType)?.color || '#1a1a1a')))
                     : '#1a1a1a'}
                   onChange={e => colorPickingType && handleFieldColorPick(colorPickingType, e.target.value)}
@@ -1541,7 +1631,7 @@ export default function Dashboard() {
                     // Company Stamp is an image upload and cannot change color — freeze it to f.color
                     const effectiveColor = isStamp
                       ? f.color
-                      : (customColor || (isSigType ? (sigConfig.color || f.color) : f.color));
+                      : (customColor || (isSigType ? (isOnlyMe ? sigConfig.color : f.color) : f.color));
                     return (
                       <div key={f.type} draggable onDragStart={e => handleDragStart(e, f.type)}
                         onDoubleClick={e => !isStamp && openColorPicker(e, f.type)}
@@ -1595,7 +1685,7 @@ export default function Dashboard() {
               <button disabled className="flex items-center justify-center w-full rounded-xl text-white font-bold text-lg gap-3 opacity-40 cursor-not-allowed" style={{ background: '#e8222c', height: 56 }}>
                 Sign
                 <div className="flex items-center justify-center w-8 h-8 rounded-full" style={{ background: 'rgba(255,255,255,0.2)' }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" /></svg>
+                  <PlayCircle className="w-4.5 h-4.5 text-white" />
                 </div>
               </button>
             ) : signatures.length === 0 ? (
@@ -1604,7 +1694,7 @@ export default function Dashboard() {
                 <button disabled className="flex items-center justify-center w-full rounded-xl text-white font-bold text-lg gap-3 opacity-40 cursor-not-allowed" style={{ background: '#e8222c', height: 56 }}>
                   Sign
                   <div className="flex items-center justify-center w-8 h-8 rounded-full" style={{ background: 'rgba(255,255,255,0.2)' }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" /></svg>
+                    <PlayCircle className="w-4.5 h-4.5 text-white" />
                   </div>
                 </button>
               </div>
@@ -1620,7 +1710,7 @@ export default function Dashboard() {
                   {isSigning ? (
                     <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full" style={{ animation: 'spin 0.7s linear infinite' }} /> Signing...</>
                   ) : (
-                    <>Sign &amp; Download <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" /></svg></>
+                    <>Sign &amp; Download <Download className="w-4.5 h-4.5 text-white" /></>
                   )}
                 </NeonSweepButton>
               </div>
@@ -1640,17 +1730,38 @@ export default function Dashboard() {
                 >
                   Sign
                   <div className="flex items-center justify-center w-8 h-8 rounded-full" style={{ background: 'rgba(255,255,255,0.2)' }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" /></svg>
+                    <PlayCircle className="w-4.5 h-4.5 text-white" />
                   </div>
                 </NeonSweepButton>
               </div>
             ) : (
-              <NeonSweepButton onClick={() => handleDownload(true)}
+              <NeonSweepButton onClick={() => {
+                const safeName = selectedDocument?.originalName || 'document.pdf';
+                navigate(`/signed?docId=${selectedDocumentId}&name=${encodeURIComponent(safeName)}`);
+              }}
                 tone="emerald"
                 className="w-full text-lg h-14">
                 Download Signed PDF
               </NeonSweepButton>
             )}
+
+            <button
+              onClick={async () => {
+                try {
+                  setIsLoadingAudit(true);
+                  setShowAuditModal(true);
+                  const logs = await fetchAuditTrail(selectedDocumentId);
+                  setAuditLogs(logs);
+                } catch (err) {
+                  showToast(err.message || 'Failed to fetch audit logs');
+                } finally {
+                  setIsLoadingAudit(false);
+                }
+              }}
+              className="mt-3 w-full text-sm font-semibold text-gray-600 border border-gray-200 rounded-lg py-3 hover:bg-gray-50 transition"
+            >
+              View Audit Trail
+            </button>
           </div>
         </aside>
       </div>
@@ -1665,9 +1776,7 @@ export default function Dashboard() {
             {/* Header */}
             <div className="flex items-center gap-3 px-5 pt-5 pb-4">
               <div className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 32, height: 32, background: '#f3f4f6' }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="#6b7280">
-                  <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z" />
-                </svg>
+                <Lock className="w-4 h-4 text-gray-500" />
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-gray-800 text-sm">Password required</p>
@@ -1711,9 +1820,7 @@ export default function Dashboard() {
               <button
                 onClick={() => { pwModal.callback(null); setPwModal(null); setPwInput(''); setShowDeleteModal(true); }}
                 className="w-full flex items-center justify-center gap-1.5 rounded-lg py-2 text-sm text-red-500 hover:bg-red-50 transition border border-red-100">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                </svg>
+                <Trash2 className="w-3.5 h-3.5" />
                 Delete file instead
               </button>
             </div>
@@ -1731,9 +1838,7 @@ export default function Dashboard() {
             <div className="px-5 py-5">
               <div className="flex items-center gap-3 mb-3">
                 <div className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 32, height: 32, background: '#fef2f2' }}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="#e8222c">
-                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                  </svg>
+                  <Trash2 className="w-4 h-4 text-[#e8222c]" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-gray-800 text-sm">Delete document?</p>
@@ -1775,9 +1880,7 @@ export default function Dashboard() {
             <div className="px-5 py-5">
               <div className="flex items-center gap-3 mb-3">
                 <div className="shrink-0 flex items-center justify-center rounded-lg" style={{ width: 32, height: 32, background: '#fef2f2' }}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="#e8222c">
-                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                  </svg>
+                  <Trash2 className="w-4 h-4 text-[#e8222c]" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-gray-800 text-sm">Delete {checkedDocumentIds.length} documents?</p>
@@ -1807,26 +1910,23 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-      {
-      /* ══════════════════════════════════════════════════════
-          Signature / Initials Style Edit Modal
-      ══════════════════════════════════════════════════════ */}
-      {sigEditModal && (() => {
-        const { sig, tab } = sigEditModal;
-        const isInitials = sig.type === 'initials';
-        const accentColor = isInitials ? '#f59e0b' : '#e8222c';
 
-        // Auto-compute initials from full name (all words)
+      {/* ══════════════════════════════════════════════════════════════
+          "Set your signature details" Modal   
+      ══════════════════════════════════════════════════════════════ */}
+      {(sigEditModal || stampModal) && (() => {
+        const isStampOnly = !!stampModal;
+        const activeSig = isStampOnly ? stampModal.sig : sigEditModal?.sig;
+        const isInitials = activeSig ? activeSig.type === 'initials' : false;
+        const isStamp = isStampOnly || (activeSig ? activeSig.type === 'stamp' : false);
+        
+        // Match ilovepdf tabs
+        const currentMainTab = isStamp ? 'stamp' : (isInitials ? 'initials_tab' : 'type');
+        const activeSubTab = sigEditModal?.tab || 'type'; // 'type', 'draw', 'upload'
+
         const autoInitials = sigConfig.name
           ? sigConfig.name.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('')
           : 'TK';
-
-        const PRESET_COLORS = [
-          { color: '#1a1a1a', label: 'Black' },
-          { color: '#e8222c', label: 'Red' },
-          { color: '#2563eb', label: 'Blue' },
-          { color: '#16a34a', label: 'Green' },
-        ];
 
         // Canvas drawing helpers
         const getCanvasPos = (canvas, e) => {
@@ -1862,174 +1962,209 @@ export default function Dashboard() {
           ctx.clearRect(0, 0, drawingRef.current.width, drawingRef.current.height);
         };
 
+        const PRESET_COLORS = [
+          { color: '#1a1a1a', label: 'Black' },
+          { color: '#e8222c', label: 'Red' },
+          { color: '#2563eb', label: 'Blue' },
+          { color: '#16a34a', label: 'Green' },
+        ];
+
         return (
           <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
-            <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)' }}
-              onClick={() => setSigEditModal(null)} />
-            <div className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in overflow-hidden"
-              style={{ maxWidth: 640, maxHeight: '94vh', boxShadow: '0 24px 80px rgba(0,0,0,0.22)' }}>
+            <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }}
+              onClick={() => { setSigEditModal(null); setStampModal(null); }} />
 
-              {/* Header row: title + close */}
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                <div>
-                  <h3 className="font-bold text-gray-900" style={{ fontSize: 18 }}>
-                    Set your signature details
-                  </h3>
-                  <p className="text-xs text-gray-400 mt-0.5">Choose a style and color for your {isInitials ? 'initials' : 'signature'}</p>
-                </div>
-                <button onClick={() => setSigEditModal(null)}
-                  className="p-2 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition">
+            <div className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
+              style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}>
+              
+              {/* Modal header */}
+              <div className="flex items-center justify-between px-8 pt-7 pb-5 shrink-0">
+                <h2 className="font-bold text-gray-900" style={{ fontSize: 24 }}>Set your signature details</h2>
+                <button onClick={() => { setSigEditModal(null); setStampModal(null); }} className="p-2 text-gray-400 hover:text-gray-600 transition rounded">
                   <XIcon />
                 </button>
               </div>
 
-              {/* Name + Initials row */}
-              <div className="flex gap-4 px-6 pt-4 pb-2">
-                <div className="flex-1">
-                  <label className="text-xs font-semibold text-gray-500 mb-1 block">
-                    {isInitials ? 'Initials:' : 'Full name:'}
-                  </label>
-                  <input
-                    value={sigEditText}
-                    onChange={e => {
-                      setSigEditText(e.target.value);
-                    }}
-                    placeholder="e.g. Tanmay Vijay Kudkar"
-                    className="w-full border-b-2 border-gray-300 focus:border-red-500 px-1 py-1.5 text-sm outline-none transition bg-transparent"
-                  />
+              {/* Name + Initials + Avatar row (only for sig/initials) */}
+              <div className="flex items-start gap-4 px-8 pb-5 shrink-0">
+                <div className="shrink-0 flex items-center justify-center rounded-full mt-5" style={{ width: 44, height: 44, border: '2px solid #e8222c' }}>
+                  <User className="w-6 h-6 text-[#e8222c] opacity-60" />
                 </div>
-                {!isInitials && (
-                  <div style={{ width: 140 }}>
-                    <label className="text-xs font-semibold text-gray-500 mb-1 block">Initials:</label>
-                    <div className="border-b-2 border-gray-300 px-1 py-1.5 text-sm text-gray-700 bg-transparent">
-                      {sigEditText.trim().split(/\s+/).filter(Boolean).map(w => w[0]?.toUpperCase() || '').join('') || autoInitials}
-                    </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full name:</label>
+                  <input value={sigEditText} onChange={e => setSigEditText(e.target.value)} placeholder="Your name"
+                    disabled={isStamp}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-800 outline-none transition disabled:opacity-50"
+                    style={{ background: '#f9fafb' }} onFocus={e => e.target.style.borderColor = '#e8222c'} onBlur={e => e.target.style.borderColor = '#d1d5db'} />
+                </div>
+                <div style={{ width: 160 }}>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">Initials:</label>
+                  <div className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-bold text-gray-800 uppercase flex items-center"
+                    style={{ background: '#f3f4f6', height: 42, opacity: isStamp ? 0.5 : 1 }}>
+                    {sigEditText.trim().split(/\s+/).filter(Boolean).map(w => w[0]?.toUpperCase() || '').join('') || autoInitials}
                   </div>
-                )}
+                </div>
               </div>
 
-              {/* Tabs */}
-              <div className="flex border-b border-gray-100 px-6">
-                {['type', 'draw'].map(t => (
-                  <button key={t} onClick={() => setSigEditModal(m => ({ ...m, tab: t }))}
-                    className="relative py-3 px-4 text-sm font-semibold transition"
-                    style={{ color: tab === t ? accentColor : '#6b7280' }}>
-                    {t === 'type' ? (
-                      <span className="flex items-center gap-1.5">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M2.5 4v3h5v12h3V7h5V4h-13zm19 5h-9v3h3v7h3v-7h3V9z"/></svg>
-                        Type
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1.5">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-                        Draw
-                      </span>
-                    )}
-                    {tab === t && <div className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full" style={{ background: accentColor }} />}
+              {/* ── Tabs: Signature | Initials | Company Stamp ── */}
+              <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
+                {[
+                  { id: 'type', label: 'Signature', icon: <PenTool className="w-4 h-4" /> },
+                  { id: 'initials_tab', label: 'Initials', icon: <span className="font-bold" style={{ fontSize: 12 }}>AC</span> },
+                  { id: 'stamp', label: 'Company Stamp', icon: <BadgeCheck className="w-4 h-4" /> },
+                ].map(tab => (
+                  <button key={tab.id}
+                    className="flex items-center gap-2 px-5 py-3 font-semibold text-sm transition border-b-2 cursor-default"
+                    style={{
+                      borderBottomColor: currentMainTab === tab.id ? '#e8222c' : 'transparent',
+                      color: currentMainTab === tab.id ? '#1a1a1a' : '#9ca3af',
+                      marginBottom: -1,
+                    }}>
+                    <span style={{ color: currentMainTab === tab.id ? '#4a7fc1' : '#9ca3af' }}>{tab.icon}</span>
+                    {tab.label}
                   </button>
                 ))}
               </div>
 
-              <div className="flex-1 overflow-y-auto px-6 py-4" style={{ minHeight: 260 }}>
-                {/* ── TYPE tab ── */}
-                {tab === 'type' && (
-                  <div className="space-y-1">
-                    {SIG_FONTS.map(f => (
-                      <button key={f.id} onClick={() => setSigEditFont(f.id)}
-                        className="flex items-center w-full rounded-xl px-4 py-3 border transition text-left"
-                        style={{
-                          borderColor: sigEditFont === f.id ? accentColor : '#e5e7eb',
-                          background: sigEditFont === f.id ? `${accentColor}08` : '#fff',
-                        }}>
-                        {/* Radio indicator */}
-                        <div className="shrink-0 w-4 h-4 rounded-full border-2 mr-4 flex items-center justify-center"
-                          style={{ borderColor: sigEditFont === f.id ? accentColor : '#d1d5db' }}>
-                          {sigEditFont === f.id && (
-                            <div className="w-2 h-2 rounded-full" style={{ background: accentColor }} />
-                          )}
-                        </div>
-                        {/* Text preview in selected color */}
-                        <span className={f.cls} style={{ fontSize: f.size * 0.85, color: sigEditColor, lineHeight: 1.2 }}>
-                          {sigEditText || (isInitials ? autoInitials : 'Tanmay Vijay Kudkar')}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* ── DRAW tab ── */}
-                {tab === 'draw' && (
-                  <div className="flex flex-col gap-3">
-                    <div className="relative w-full rounded-xl border-2 border-gray-200 bg-gray-50 overflow-hidden"
-                      style={{ height: 200 }}>
-                      <canvas
-                        ref={drawingRef}
-                        width={580}
-                        height={196}
-                        className="w-full h-full touch-none"
-                        style={{ cursor: 'crosshair' }}
-                        onMouseDown={startDraw}
-                        onMouseMove={doDraw}
-                        onMouseUp={endDraw}
-                        onMouseLeave={endDraw}
-                        onTouchStart={startDraw}
-                        onTouchMove={doDraw}
-                        onTouchEnd={endDraw}
-                      />
-                      {/* placeholder hint */}
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                        style={{ opacity: 0.35 }}>
-                        <span className="text-sm text-gray-400 font-medium select-none">Draw your signature here</span>
-                      </div>
-                    </div>
-                    <button onClick={clearCanvas}
-                      className="self-start text-xs font-semibold text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition hover:border-red-200">
-                      Clear
+              {/* ── Tab content area ── */}
+              <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 320 }}>
+                
+                {/* Left icon strip (Type/Draw/Upload sub-tabs) */}
+                {!isStamp && (
+                  <div className="shrink-0 flex flex-col items-center gap-2 border-r border-gray-100 pt-4 px-3" style={{ width: 56, background: '#fafafa' }}>
+                    <button onClick={() => setSigEditModal({ sig: activeSig, tab: 'type' })} title="Type"
+                      className="flex items-center justify-center w-9 h-9 rounded-lg transition"
+                      style={{ background: activeSubTab === 'type' ? '#fff' : 'transparent', border: activeSubTab === 'type' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}>
+                      <Type className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => setSigEditModal({ sig: activeSig, tab: 'draw' })} title="Draw"
+                      className="flex items-center justify-center w-9 h-9 rounded-lg transition"
+                      style={{ background: activeSubTab === 'draw' ? '#fff' : 'transparent', border: activeSubTab === 'draw' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}>
+                      <PenTool className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => setSigEditModal({ sig: activeSig, tab: 'upload' })} title="Upload"
+                      className="flex items-center justify-center w-9 h-9 rounded-lg transition"
+                      style={{ background: activeSubTab === 'upload' ? '#fff' : 'transparent', border: activeSubTab === 'upload' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}>
+                      <UploadCloud className="w-4 h-4" />
                     </button>
                   </div>
                 )}
+
+                {/* ── Type tab ── */}
+                {!isStamp && activeSubTab === 'type' && (
+                  <div className="flex-1 overflow-y-auto sig-font-list" style={{ padding: '12px 16px' }}>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      {SIG_FONTS.map((font, idx) => (
+                        <label key={font.id} className="flex items-center gap-4 px-4 py-3 cursor-pointer transition"
+                          style={{ background: sigEditFont === font.id ? '#f0f9f0' : '#fff', borderBottom: idx < SIG_FONTS.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
+                          <input type="radio" name="sigFont" value={font.id} checked={sigEditFont === font.id} onChange={() => setSigEditFont(font.id)} className="w-4 h-4 accent-green-500" />
+                          <span className={font.cls} style={{ fontSize: font.size * 0.85, color: sigEditColor, lineHeight: 1.1, flex: 1 }}>
+                            {sigEditText || (isInitials ? autoInitials : 'Tanmay Vijay Kudkar')}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Draw tab ── */}
+                {!isStamp && activeSubTab === 'draw' && (
+                  <div className="flex-1 flex gap-3 p-4">
+                    <div className="flex-1 rounded-lg overflow-hidden border border-gray-200 relative" style={{ background: '#f7f9fc' }}>
+                      <canvas ref={drawingRef} width={580} height={196} className="w-full h-full touch-none" style={{ cursor: 'crosshair' }}
+                        onMouseDown={startDraw} onMouseMove={doDraw} onMouseUp={endDraw} onMouseLeave={endDraw}
+                        onTouchStart={startDraw} onTouchMove={doDraw} onTouchEnd={endDraw} />
+                      <button onClick={clearCanvas} className="absolute top-2 right-2 text-xs font-semibold text-gray-400 hover:text-red-500 bg-white border border-gray-200 rounded px-2 py-1 shadow-sm transition">Clear</button>
+                    </div>
+                    {/* Color picker side panel */}
+                    <div className="shrink-0 flex flex-col items-center justify-center gap-4 rounded-lg border border-gray-200 p-4" style={{ width: 80, background: '#f7f9fc' }}>
+                      {PRESET_COLORS.map(p => (
+                        <button key={p.color} onClick={() => setSigEditColor(p.color)} className="w-8 h-8 rounded-full border-2 transition"
+                          style={{ background: p.color, borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent', boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none' }} title={p.label} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Upload tab (for signature/initials) ── */}
+                {!isStamp && activeSubTab === 'upload' && (
+                  <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
+                    <div className="text-center">
+                      <UploadCloud className="w-10 h-10 opacity-30 mx-auto mb-2" />
+                      <p className="text-sm">Upload coming soon</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Company Stamp Upload ── */}
+                {isStamp && (
+                  <div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
+                    <input ref={stampFileRef} type="file" accept="image/png,image/jpeg,image/svg+xml" className="hidden"
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = ev => {
+                          const result = ev.target.result;
+                          if (result.startsWith('data:image/svg+xml')) {
+                            const img = new Image(); img.onload = () => {
+                              const canvas = document.createElement('canvas'); canvas.width = img.width || 300; canvas.height = img.height || 150;
+                              const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, canvas.width, canvas.height); setStampImageB64(canvas.toDataURL('image/png'));
+                            }; img.src = result;
+                          } else { setStampImageB64(result); }
+                        }; reader.readAsDataURL(file);
+                      }} />
+                    
+                    <div onClick={() => stampFileRef.current?.click()} onDragOver={e => e.preventDefault()}
+                      onDrop={e => {
+                        e.preventDefault(); const file = e.dataTransfer.files?.[0]; if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = ev => {
+                          const result = ev.target.result;
+                          if (result.startsWith('data:image/svg+xml')) {
+                            const img = new Image(); img.onload = () => {
+                              const canvas = document.createElement('canvas'); canvas.width = img.width || 300; canvas.height = img.height || 150;
+                              const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, canvas.width, canvas.height); setStampImageB64(canvas.toDataURL('image/png'));
+                            }; img.src = result;
+                          } else { setStampImageB64(result); }
+                        }; reader.readAsDataURL(file);
+                      }}
+                      className="w-full rounded-xl border-2 border-dashed cursor-pointer flex flex-col items-center justify-center gap-3 transition hover:border-purple-400 hover:bg-purple-50"
+                      style={{ borderColor: stampImageB64 ? '#8b5cf6' : '#d1d5db', background: stampImageB64 ? '#f5f3ff' : '#fafafa', minHeight: 180 }}>
+                      {stampImageB64 ? (
+                        <>
+                          <img src={stampImageB64} alt="Stamp preview" style={{ maxHeight: 110, maxWidth: 300, objectFit: 'contain' }} />
+                          <span className="text-xs text-purple-500 font-semibold">Click to change</span>
+                        </>
+                      ) : (
+                        <>
+                          <button className="font-bold text-[#8b5cf6] border-2 border-[#8b5cf6] px-5 py-2 rounded-lg hover:bg-purple-50 transition text-sm">Upload Stamp</button>
+                          <p className="text-sm text-gray-400">or drop file here</p>
+                          <p className="text-[10px] text-gray-300">Accepted formats: PNG, JPG and SVG</p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Color picker row — always visible */}
-              <div className="flex items-center gap-3 px-6 py-3 border-t border-gray-100">
-                <span className="text-xs font-semibold text-gray-500">Color:</span>
-                {PRESET_COLORS.map(p => (
-                  <button key={p.color}
-                    onClick={() => setSigEditColor(p.color)}
-                    className="w-7 h-7 rounded-full border-2 transition flex items-center justify-center"
-                    style={{
-                      background: p.color,
-                      borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent',
-                      boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none',
-                    }}
-                    title={p.label}
-                  />
-                ))}
-                {/* Color wheel / custom picker */}
-                <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center"
-                  style={{
-                    background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                    borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
-                    boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
-                  }}
-                  title="Custom color">
-                  <input type="color" value={sigEditColor}
-                    onChange={e => setSigEditColor(e.target.value)}
-                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-                  />
-                </label>
-              </div>
+              {/* Color picker row (only for type) */}
+              {!isStamp && activeSubTab === 'type' && (
+                <div className="flex items-center gap-3 px-8 py-3 border-t border-gray-100 shrink-0">
+                  <span className="text-xs font-semibold text-gray-500">Color:</span>
+                  {PRESET_COLORS.map(p => (
+                    <button key={p.color} onClick={() => setSigEditColor(p.color)} className="w-7 h-7 rounded-full border-2 transition"
+                      style={{ background: p.color, borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent', boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none' }} title={p.label} />
+                  ))}
+                </div>
+              )}
 
-              {/* Footer buttons */}
-              <div className="flex gap-3 px-6 py-4 border-t border-gray-100">
-                <button onClick={() => setSigEditModal(null)}
-                  className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
-                  Cancel
-                </button>
-                <button onClick={handleSigEditApply}
-                  className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition hover:opacity-90"
-                  style={{ background: accentColor }}>
-                  Apply {isInitials ? 'Initials' : 'Signature'}
+              {/* Modal footer */}
+              <div className="shrink-0 flex items-center justify-end px-8 py-5 border-t border-gray-100">
+                <button onClick={isStamp ? handleStampApply : handleSigEditApply} disabled={isStamp && !stampImageB64}
+                  className="text-white font-bold px-8 py-2.5 rounded-lg transition hover:opacity-90 text-sm disabled:opacity-40"
+                  style={{ background: '#e8222c' }}>
+                  Apply
                 </button>
               </div>
             </div>
@@ -2037,130 +2172,304 @@ export default function Dashboard() {
         );
       })()}
 
-
-      {/* ═══════════════════════════════════════════
-          Company Stamp Configuration Modal
-      ═══════════════════════════════════════════ */}
-      {stampModal && (
+      {/* ── Email Modal ── */}
+      {emailModal && (
         <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
-          <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)' }}
-            onClick={() => setStampModal(null)} />
-          <div className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in overflow-hidden"
-            style={{ maxWidth: 540, boxShadow: '0 24px 80px rgba(0,0,0,0.22)' }}>
-
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <div>
-                <h3 className="font-bold text-gray-900" style={{ fontSize: 18 }}>Company Stamp</h3>
-                <p className="text-xs text-gray-400 mt-0.5">Upload your company stamp image</p>
+          <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.28)' }}
+            onClick={() => !isEmailing && setEmailModal(null)} />
+          <div className="relative w-full bg-white rounded-xl animate-fade-in"
+            style={{ maxWidth: 400, boxShadow: '0 4px 20px rgba(0,0,0,0.10)', border: '1px solid #e5e7eb' }}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <h3 className="font-bold text-gray-900 text-lg">Send Signature Request</h3>
+              <button onClick={() => !isEmailing && setEmailModal(null)}
+                className="p-1 text-gray-400 hover:text-gray-600 transition rounded">
+                <XIcon />
+              </button>
+            </div>
+            <div className="px-5 py-5">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Recipient Email Address</label>
+              <input type="email" value={emailAddress}
+                onChange={e => setEmailAddress(e.target.value)}
+                placeholder="signer@example.com"
+                className="w-full rounded-lg border px-3 py-2.5 text-sm text-gray-800 outline-none transition mb-4"
+                style={{ borderColor: '#d1d5db', background: '#f9fafb' }}
+                onFocus={e => e.target.style.borderColor = '#f59e0b'}
+                onBlur={e => e.target.style.borderColor = '#d1d5db'}
+              />
+              <div className="flex gap-2">
+                <button onClick={() => setEmailModal(null)} disabled={isEmailing}
+                  className="flex-1 font-semibold text-sm text-gray-600 border border-gray-200 rounded-lg py-2.5 transition hover:bg-gray-50 disabled:opacity-40">
+                  Cancel
+                </button>
+                <button onClick={async () => {
+                  if (!emailAddress) return;
+                  try {
+                    setIsEmailing(true);
+                    await emailSignatureLink(emailModal.sig.id, emailAddress);
+                    showToast('Email sent successfully!');
+                    setEmailModal(null);
+                  } catch (err) {
+                    showToast(err.message || 'Failed to send email');
+                  } finally {
+                    setIsEmailing(false);
+                  }
+                }} disabled={isEmailing || !emailAddress}
+                  className="flex-1 font-semibold text-sm text-white rounded-lg py-2.5 transition hover:opacity-90 disabled:opacity-40"
+                  style={{ background: '#f59e0b' }}>
+                  {isEmailing ? 'Sending...' : 'Send Email'}
+                </button>
               </div>
-              <button onClick={() => setStampModal(null)}
-                className="p-2 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition">
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Audit Trail Modal ── */}
+      {showAuditModal && (
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
+          <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}
+            onClick={() => setShowAuditModal(false)} />
+          <div className="relative w-full bg-white rounded-2xl animate-fade-in flex flex-col shadow-2xl border border-gray-150 overflow-hidden"
+            style={{ maxWidth: 640, maxHeight: '82vh' }}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100 shrink-0 bg-gray-50/50">
+              <div>
+                <h3 className="font-bold text-gray-900 text-lg">
+                  Audit Trail
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[500px]">
+                  {selectedDocument?.originalName || auditLogs[0]?.document_name || 'Document Activity History'}
+                </p>
+              </div>
+              <button onClick={() => setShowAuditModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition rounded-lg">
                 <XIcon />
               </button>
             </div>
 
-            <div className="px-6 py-5 space-y-4">
-
-              {/* Upload area */}
-              <div>
-                <label className="text-xs font-semibold text-gray-500 mb-1.5 block">Upload Stamp Image</label>
-                <input
-                  ref={stampFileRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/svg+xml"
-                  className="hidden"
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = ev => {
-                      const result = ev.target.result;
-                      if (result.startsWith('data:image/svg+xml')) {
-                        const img = new Image();
-                        img.onload = () => {
-                          const canvas = document.createElement('canvas');
-                          canvas.width = img.width || 300;
-                          canvas.height = img.height || 150;
-                          const ctx = canvas.getContext('2d');
-                          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                          setStampImageB64(canvas.toDataURL('image/png'));
-                        };
-                        img.src = result;
-                      } else {
-                        setStampImageB64(result);
-                      }
-                    };
-                    reader.readAsDataURL(file);
-                  }}
-                />
-                <div
-                  onClick={() => stampFileRef.current?.click()}
-                  onDragOver={e => e.preventDefault()}
-                  onDrop={e => {
-                    e.preventDefault();
-                    const file = e.dataTransfer.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = ev => {
-                      const result = ev.target.result;
-                      if (result.startsWith('data:image/svg+xml')) {
-                        const img = new Image();
-                        img.onload = () => {
-                          const canvas = document.createElement('canvas');
-                          canvas.width = img.width || 300;
-                          canvas.height = img.height || 150;
-                          const ctx = canvas.getContext('2d');
-                          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                          setStampImageB64(canvas.toDataURL('image/png'));
-                        };
-                        img.src = result;
-                      } else {
-                        setStampImageB64(result);
-                      }
-                    };
-                    reader.readAsDataURL(file);
-                  }}
-                  className="w-full rounded-xl border-2 border-dashed cursor-pointer flex flex-col items-center justify-center gap-3 transition hover:border-purple-400 hover:bg-purple-50"
-                  style={{ borderColor: stampImageB64 ? '#8b5cf6' : '#d1d5db', background: stampImageB64 ? '#f5f3ff' : '#fafafa', minHeight: 150 }}>
-                  {stampImageB64 ? (
-                    <>
-                      <img src={stampImageB64} alt="Stamp preview" style={{ maxHeight: 90, maxWidth: 280, objectFit: 'contain' }} />
-                      <span className="text-xs text-purple-500 font-semibold">Click to change</span>
-                    </>
-                  ) : (
-                    <>
-                      <svg width="32" height="32" viewBox="0 0 24 24" fill="#d1d5db">
-                        <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
-                      </svg>
-                      <div className="text-center">
-                        <p className="text-sm font-semibold text-gray-500">Upload company stamp</p>
-                        <p className="text-xs text-gray-400 mt-1">or drop file here</p>
-                        <p className="text-[10px] text-gray-300 mt-1">Accepted formats: PNG, JPG and SVG</p>
-                      </div>
-                    </>
-                  )}
+            {/* Body */}
+            <div className="px-6 py-6 overflow-y-auto flex-1 custom-scrollbar bg-white">
+              {isLoadingAudit ? (
+                <div className="flex flex-col justify-center items-center py-20 gap-3">
+                  <div className="w-10 h-10 border-4 border-[#e8222c] border-t-transparent rounded-full" style={{ animation: 'spin 0.8s linear infinite' }} />
+                  <p className="text-sm text-gray-400 font-medium">Loading activity trails...</p>
                 </div>
-                {stampImageB64 && (
-                  <button onClick={() => setStampImageB64(null)}
-                    className="mt-2 text-xs text-red-400 hover:text-red-600 font-medium">
-                    Remove image
-                  </button>
-                )}
-              </div>
+              ) : auditLogs.length === 0 ? (
+                <div className="flex flex-col justify-center items-center py-20 text-center">
+                  <FileText className="w-12 h-12 text-gray-300 mb-3" />
+                  <p className="text-gray-500 font-medium">No activity recorded yet.</p>
+                  <p className="text-xs text-gray-400 mt-1">Actions on this document will appear here in real time.</p>
+                </div>
+              ) : (
+                <div className="relative pl-4">
+                  {/* Timeline vertical bar */}
+                  <div className="absolute left-7 top-3 bottom-3 w-0.5 bg-gray-100" />
+                  
+                  <div className="space-y-8 relative">
+                    {auditLogs.map((log, idx) => {
+                      const d = new Date(log.created_at);
+                      const formattedDate = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}, ${d.toLocaleDateString('en-US', { weekday: 'short' })}, ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+                      
+                      // Map actions to beautiful UI styles
+                      const act = (() => {
+                        switch (log.action) {
+                          case 'DOCUMENT_CREATED':
+                          case 'Document Uploaded':
+                            return {
+                              label: 'Document Uploaded',
+                              dotColor: 'bg-blue-500 ring-4 ring-blue-50',
+                              icon: <Upload className="w-4 h-4 text-white" />
+                            };
+                          case 'DOCUMENT_VIEWED':
+                          case 'Document Viewed':
+                            return {
+                              label: 'Document Viewed',
+                              dotColor: 'bg-purple-500 ring-4 ring-purple-50',
+                              icon: <Eye className="w-4 h-4 text-white" />
+                            };
+                          case 'DOCUMENT_SIGNED':
+                          case 'Document Signed':
+                            return {
+                              label: 'Document Signed',
+                              dotColor: 'bg-emerald-500 ring-4 ring-emerald-50',
+                              icon: <CheckCircle className="w-4 h-4 text-white" />
+                            };
+                          case 'DOCUMENT_REJECTED':
+                          case 'Signature Rejected':
+                            return {
+                              label: 'Signature Declined',
+                              dotColor: 'bg-rose-500 ring-4 ring-rose-50',
+                              icon: <XCircle className="w-4 h-4 text-white" />
+                            };
+                          case 'EMAIL_SENT':
+                          case 'Signature Link Emailed':
+                            return {
+                              label: 'Signing Link Emailed',
+                              dotColor: 'bg-amber-500 ring-4 ring-amber-50',
+                              icon: <Mail className="w-4 h-4 text-white" />
+                            };
+                          case 'CONFIG_SAVED':
+                          case 'several_people_config_saved':
+                          case 'Document Configured':
+                            return {
+                              label: 'Recipients Configured',
+                              dotColor: 'bg-indigo-500 ring-4 ring-indigo-50',
+                              icon: <Settings className="w-4 h-4 text-white" />
+                            };
+                          case 'DOCUMENT_DOWNLOADED':
+                            return {
+                              label: 'Document Downloaded',
+                              dotColor: 'bg-teal-500 ring-4 ring-teal-50',
+                              icon: <Download className="w-4 h-4 text-white" />
+                            };
+                          case 'SIGNATURE_ADDED':
+                            return {
+                              label: 'Signature Added',
+                              dotColor: 'bg-cyan-500 ring-4 ring-cyan-50',
+                              icon: <PenTool className="w-4 h-4 text-white" />
+                            };
+                          case 'SIGNATURE_DELETED':
+                            return {
+                              label: 'Signature Deleted',
+                              dotColor: 'bg-red-400 ring-4 ring-red-50',
+                              icon: <Trash2 className="w-4 h-4 text-white" />
+                            };
+                          case 'DOCUMENT_COMPLETED':
+                            return {
+                              label: 'Document Completed',
+                              dotColor: 'bg-green-600 ring-4 ring-green-50',
+                              icon: <BadgeCheck className="w-4 h-4 text-white" />
+                            };
+                          default:
+                            return {
+                              label: log.action.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' '),
+                              dotColor: 'bg-gray-500 ring-4 ring-gray-50',
+                              icon: <FileText className="w-4 h-4 text-white" />
+                            };
+                        }
+                      })();
+
+                      const actorText = (() => {
+                        if (log.actor_name) return `${log.actor_name} (${log.actor_email})`;
+                        if (log.metadata?.receiverName || log.metadata?.receiverEmail) {
+                          return `${log.metadata.receiverName || 'Unknown Receiver'} (${log.metadata.receiverEmail || 'No Email'})`;
+                        }
+                        return 'System / Link Recipient';
+                      })();
+
+                      const locationText = log.city && log.country ? `${log.city}, ${log.country}` : log.country || null;
+
+                      return (
+                        <div key={idx} className="flex gap-6 items-start">
+                          {/* Bullet dot */}
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-sm relative z-10 ${act.dotColor}`}>
+                            {act.icon}
+                          </div>
+
+                          {/* Detail panel */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-4">
+                              <p className="font-bold text-gray-900 text-[15px]">{act.label}</p>
+                              <span className="text-xs text-gray-400 flex items-center gap-1.5 shrink-0">
+                                <Clock className="w-3.5 h-3.5" />
+                                {formattedDate}
+                              </span>
+                            </div>
+
+                            {/* Tracking metadata badges */}
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              <span className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 border border-gray-200/60 px-2 py-0.5 rounded-md">
+                                <User className="w-3.5 h-3.5 text-gray-400" />
+                                {actorText}
+                              </span>
+                              
+                              <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200/60 px-2 py-0.5 rounded-md font-mono">
+                                IP: {log.ip_address || 'Unknown'}
+                              </span>
+
+                              {log.device_type && log.device_type !== 'Unknown' && (
+                                <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200/60 px-2 py-0.5 rounded-md">
+                                  {log.device_type === 'Mobile' ? '📱 Mobile' : log.device_type === 'Tablet' ? '📟 Tablet' : '💻 Desktop'}
+                                </span>
+                              )}
+
+                              {locationText && (
+                                <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200/60 px-2 py-0.5 rounded-md">
+                                  <Globe className="w-3.5 h-3.5 text-gray-400" />
+                                  {locationText}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Rich metadata display */}
+                            {log.metadata && Object.keys(log.metadata).length > 0 && (
+                              <div className="mt-3 p-3.5 bg-gray-50 border border-gray-100 rounded-xl text-xs text-gray-600 shadow-inner max-w-full">
+                                {log.action === 'CONFIG_SAVED' || log.action === 'several_people_config_saved' || log.action === 'Document Configured' ? (
+                                  <div>
+                                    <div className="font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
+                                      <Settings className="w-3.5 h-3.5 text-indigo-500" />
+                                      Configured Recipients ({log.metadata.receiversCount || log.metadata.receivers?.length || 0}):
+                                    </div>
+                                    {log.metadata.receivers && log.metadata.receivers.length > 0 ? (
+                                      <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 pl-1.5">
+                                        {log.metadata.receivers.map((r, rIdx) => (
+                                          <li key={rIdx} className="bg-white px-2 py-1.5 border border-gray-150 rounded-md shadow-sm flex flex-col">
+                                            <span className="font-semibold text-gray-800 text-xs">{r.name}</span>
+                                            <span className="text-[10px] text-gray-500 mt-0.5 truncate">{r.email}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                      <p className="text-[11px] text-gray-400 italic pl-1.5">Recipient details not available for legacy log.</p>
+                                    )}
+                                  </div>
+                                ) : log.action === 'DOCUMENT_REJECTED' || log.action === 'Signature Rejected' ? (
+                                  <div className="flex items-start gap-2 bg-rose-50/50 border border-rose-100 p-2.5 rounded-lg">
+                                    <XCircle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
+                                    <div>
+                                      <span className="font-bold text-rose-800 block text-xs">Decline Reason:</span>
+                                      <span className="italic text-gray-700 mt-0.5 block">"{log.metadata.reason || 'No reason provided'}"</span>
+                                    </div>
+                                  </div>
+                                ) : log.action === 'EMAIL_SENT' || log.action === 'Signature Link Emailed' ? (
+                                  <div className="flex items-center gap-2 text-gray-600">
+                                    <Mail className="w-4 h-4 text-amber-500 shrink-0" />
+                                    <span>
+                                      Sent secure invitation email to <span className="font-semibold text-gray-800">{log.metadata.receiverEmail}</span>
+                                    </span>
+                                  </div>
+                                ) : (
+                                  /* General fallback details grid */
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 font-mono text-[11px]">
+                                    {Object.entries(log.metadata).map(([k, v]) => {
+                                      if (k === 'receiverName' || k === 'receiverEmail') return null;
+                                      return (
+                                        <div key={k} className="flex justify-between border-b border-gray-100/60 pb-1">
+                                          <span className="text-gray-400">{k}:</span>
+                                          <span className="text-gray-700 font-semibold truncate ml-2 max-w-[150px]">
+                                            {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Footer */}
-            <div className="flex gap-3 px-6 py-4 border-t border-gray-100">
-              <button onClick={() => setStampModal(null)}
-                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
-                Cancel
-              </button>
-              <button onClick={handleStampApply}
-                disabled={!stampImageB64}
-                className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition hover:opacity-90 disabled:opacity-40"
-                style={{ background: '#8b5cf6' }}>
-                Apply Stamp
+            <div className="px-6 py-4.5 border-t border-gray-100 shrink-0 flex justify-end bg-gray-50/50">
+              <button onClick={() => setShowAuditModal(false)}
+                className="font-bold text-sm text-gray-700 bg-white border border-gray-200 rounded-xl px-5 py-2.5 hover:bg-gray-50 active:bg-gray-100 transition shadow-sm">
+                Close
               </button>
             </div>
           </div>

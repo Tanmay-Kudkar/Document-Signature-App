@@ -1,14 +1,25 @@
 import { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
 
-/**
- * SignatureCanvas — lets the user draw a signature with mouse / touch.
- * Expose `getImageDataUrl()` via ref so the parent can retrieve the PNG.
- */
+/* ==========================================================================
+ * ✍️ COMPONENT: SignatureCanvas
+ * --------------------------------------------------------------------------
+ * A reusable canvas component that allows users to draw their signature 
+ * using a mouse, touch, or stylus. It exposes imperative handles to let 
+ * parent components retrieve the drawn image as a base64 PNG data URL.
+ * ========================================================================== */
 const SignatureCanvas = forwardRef(function SignatureCanvas({ width = 400, height = 160, lineColor = '#1a1a2e', lineWidth = 2.5 }, ref) {
   const canvasRef = useRef(null);
   const isDrawing = useRef(false);
   const [isEmpty, setIsEmpty] = useState(true);
 
+  /* ------------------------------------------------------------------------
+   * 🔗 IMPERATIVE HANDLE
+   * ------------------------------------------------------------------------
+   * Exposes specific methods to the parent component via the forwarded ref.
+   * - getImageDataUrl: Returns the PNG string or null if canvas is empty.
+   * - clear: Programmatically clears the canvas.
+   * - isEmpty: Returns the current empty state.
+   * ------------------------------------------------------------------------ */
   useImperativeHandle(ref, () => ({
     getImageDataUrl() {
       return isEmpty ? null : canvasRef.current?.toDataURL('image/png');
@@ -21,6 +32,12 @@ const SignatureCanvas = forwardRef(function SignatureCanvas({ width = 400, heigh
     },
   }));
 
+  /* ------------------------------------------------------------------------
+   * 🎨 EFFECT: Initialize Canvas Context
+   * ------------------------------------------------------------------------
+   * Sets up the initial canvas state, including a solid white background 
+   * (to prevent transparent PNG issues) and standardizing stroke properties.
+   * ------------------------------------------------------------------------ */
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -33,6 +50,12 @@ const SignatureCanvas = forwardRef(function SignatureCanvas({ width = 400, heigh
     ctx.lineJoin = 'round';
   }, [lineColor, lineWidth]);
 
+  /* ------------------------------------------------------------------------
+   * 📍 FUNCTION: getPos
+   * ------------------------------------------------------------------------
+   * Normalizes mouse and touch coordinates relative to the canvas size and 
+   * its actual rendered dimensions (handling CSS scaling differences).
+   * ------------------------------------------------------------------------ */
   const getPos = (e, canvas) => {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -49,6 +72,11 @@ const SignatureCanvas = forwardRef(function SignatureCanvas({ width = 400, heigh
     };
   };
 
+  /* ------------------------------------------------------------------------
+   * 🖱️ DRAWING EVENT HANDLERS
+   * ------------------------------------------------------------------------
+   * Handles the start, progression, and termination of the drawing strokes.
+   * ------------------------------------------------------------------------ */
   const startDraw = (e) => {
     e.preventDefault();
     const canvas = canvasRef.current;
@@ -87,6 +115,9 @@ const SignatureCanvas = forwardRef(function SignatureCanvas({ width = 400, heigh
     setIsEmpty(true);
   };
 
+  /* ==========================================================================
+   * 🖼️ RENDER UI
+   * ========================================================================== */
   return (
     <div className="flex flex-col items-center gap-3">
       <canvas
