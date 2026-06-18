@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
 import NeonSweepButton from '../components/NeonSweepButton';
+import { savePreferences } from '../lib/preferences';
 
 import SeveralPeopleModal from '../components/SeveralPeopleModal';
 import { 
@@ -36,20 +37,26 @@ export default function Home() {
   const [showSeveralPeopleModal, setShowSeveralPeopleModal] = useState(false);
 
   const [showSigConfig, setShowSigConfig] = useState(false);
-  const [modalTab, setModalTab] = useState('type'); // type | draw | upload
+  const [modalTab, setModalTab] = useState('type'); // type | initials_tab | stamp
+  const [modalSubTab, setModalSubTab] = useState('type'); // type | draw | upload (for sig/initials tabs)
   const [sigConfig, setSigConfig] = useState({
     name: '',
     initials: '',
     font: 'greatvibes',
-    color: '#1a1a1a',
+    color: '#000000',
     drawingImage: null
   });
   const [userEditedInitials, setUserEditedInitials] = useState(false);
+  const [stampImage, setStampImage] = useState(null);       // base64 for company stamp
+  const [uploadedSig, setUploadedSig] = useState(null);     // base64 for uploaded signature
+  const stampInputRef = useRef(null);
+  const sigUploadInputRef = useRef(null);
 
   // Drawing refs
   const drawingRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const lastPosRef = useRef(null);
+  const drawHistoryRef = useRef([]); // undo stack for draw tab
 
   const SIG_FONTS = [
     { id: 'greatvibes',  label: 'Great Vibes',   cls: 'font-greatvibes',  size: 32 },
@@ -79,8 +86,21 @@ export default function Home() {
     const src = e.touches ? e.touches[0] : e;
     return { x: src.clientX - rect.left, y: src.clientY - rect.top };
   };
+  const saveDrawSnapshot = () => {
+    if (!drawingRef.current) return;
+    const ctx = drawingRef.current.getContext('2d');
+    const snap = ctx.getImageData(0, 0, drawingRef.current.width, drawingRef.current.height);
+    drawHistoryRef.current.push(snap);
+    if (drawHistoryRef.current.length > 50) drawHistoryRef.current.shift();
+  };
+  const undoStroke = () => {
+    if (!drawingRef.current || drawHistoryRef.current.length === 0) return;
+    const ctx = drawingRef.current.getContext('2d');
+    ctx.putImageData(drawHistoryRef.current.pop(), 0, 0);
+  };
   const startDraw = (e) => {
     e.preventDefault();
+    saveDrawSnapshot(); // snapshot before each stroke
     setIsDrawing(true);
     const pos = getCanvasPos(drawingRef.current, e);
     lastPosRef.current = pos;
@@ -103,20 +123,44 @@ export default function Home() {
   const endDraw = () => setIsDrawing(false);
   const clearCanvas = () => {
     if (!drawingRef.current) return;
+    saveDrawSnapshot();
     const ctx = drawingRef.current.getContext('2d');
     ctx.clearRect(0, 0, drawingRef.current.width, drawingRef.current.height);
+    drawHistoryRef.current = [];
   };
 
   const handleOnlyMeClick = () => {
     localStorage.setItem('signingMode', 'only_me');
+    // Restore previously saved signature config (name, font, color, initials)
+    try {
+      const saved = localStorage.getItem('signatureConfig');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setSigConfig({
+          name: parsed.name || '',
+          initials: parsed.initials || '',
+          font: parsed.font || 'greatvibes',
+          color: parsed.color || '#1a1a1a',
+          drawingImage: null, // don't restore drawing — always start fresh
+        });
+        // If initials were saved, mark them as user-edited so the auto-derive doesn't overwrite
+        if (parsed.initials) setUserEditedInitials(true);
+      }
+    } catch {
+      // ignore malformed data, use defaults
+    }
     setShowSigConfig(true);
   };
 
   const handleConfirmSigConfig = () => {
     // Capture drawing if on draw tab
     let finalConfig = { ...sigConfig };
-    if (modalTab === 'draw' && drawingRef.current) {
+    if (modalSubTab === 'draw' && drawingRef.current) {
       finalConfig.drawingImage = drawingRef.current.toDataURL('image/png');
+    } else if (modalSubTab === 'upload' && uploadedSig) {
+      finalConfig.drawingImage = uploadedSig;
+    } else if (modalTab === 'stamp' && stampImage) {
+      finalConfig.stampImage = stampImage;
     }
     // Save to localStorage
     localStorage.setItem('signatureConfig', JSON.stringify(finalConfig));
@@ -125,6 +169,14 @@ export default function Home() {
     setShowSigConfig(false);
     handleUploadAndNavigate();
   };
+
+  // Helper: read a File as base64
+  const readFileAsBase64 = (file) =>
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => resolve(ev.target.result);
+      reader.readAsDataURL(file);
+    });
 
   const handleSeveralPeopleApply = (config) => {
     localStorage.setItem('severalPeopleConfig', JSON.stringify(config));
@@ -284,7 +336,7 @@ export default function Home() {
       )}
 
       {/* ── "Who will sign?" overlay modal ── */}
-      {selectedFile && (
+      {selectedFile && !showSigConfig && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
           {/* Blurred backdrop */}
           <div
@@ -384,6 +436,12 @@ export default function Home() {
           <div
             className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
             style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                e.preventDefault();
+                undoStroke();
+              }
+            }}
           >
             {/* Modal header */}
             <div className="flex items-center justify-between px-5 sm:px-8 pt-5 sm:pt-7 pb-5 shrink-0">
@@ -441,19 +499,13 @@ export default function Home() {
             {/* ── Tabs: Signature | Initials | Company Stamp ── */}
             <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
               {[
-                { id: 'type', label: 'Signature', icon: (
-                  <PenTool className="w-4 h-4" />
-                )},
-                { id: 'initials_tab', label: 'Initials', icon: (
-                  <span className="font-bold" style={{ fontSize: 12 }}>AC</span>
-                )},
-                { id: 'stamp', label: 'Company Stamp', icon: (
-                  <BadgeCheck className="w-4 h-4" />
-                )},
+                { id: 'type', label: 'Signature', icon: <PenTool className="w-4 h-4" /> },
+                { id: 'initials_tab', label: 'AC Initials', icon: <span className="font-bold" style={{ fontSize: 12 }}>AC</span> },
+                { id: 'stamp', label: 'Company Stamp', icon: <BadgeCheck className="w-4 h-4" /> },
               ].map(tab => (
                 <button
                   key={tab.id}
-                  onClick={() => setModalTab(tab.id)}
+                  onClick={() => { setModalTab(tab.id); setModalSubTab('type'); }}
                   className="flex items-center gap-2 px-5 py-3 font-semibold text-sm transition border-b-2"
                   style={{
                     borderBottomColor: modalTab === tab.id ? '#e8222c' : 'transparent',
@@ -468,46 +520,43 @@ export default function Home() {
             </div>
 
             {/* ── Tab content area ── */}
-            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 320 }}>
+            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 340 }}>
 
-              {/* Left icon strip (Type/Draw/Upload sub-tabs) — only for Signature tab */}
+              {/* Left icon strip (Type/Draw/Upload sub-tabs) — only for Signature and Initials tabs */}
               {(modalTab === 'type' || modalTab === 'initials_tab') && (
                 <div
                   className="shrink-0 flex flex-col items-center gap-2 border-r border-gray-100 pt-4 px-3"
                   style={{ width: 56, background: '#fafafa' }}
                 >
-                  {/* Type icon */}
                   <button
-                    onClick={() => setModalTab('type')}
+                    onClick={() => setModalSubTab('type')}
                     title="Type"
                     className="flex items-center justify-center w-9 h-9 rounded-lg transition"
-                    style={{ background: modalTab === 'type' ? '#fff' : 'transparent', border: modalTab === 'type' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
+                    style={{ background: modalSubTab === 'type' ? '#fff' : 'transparent', border: modalSubTab === 'type' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
                   >
                     <Type className="w-4 h-4" />
                   </button>
-                  {/* Draw icon */}
                   <button
-                    onClick={() => setModalTab('draw')}
+                    onClick={() => setModalSubTab('draw')}
                     title="Draw"
                     className="flex items-center justify-center w-9 h-9 rounded-lg transition"
-                    style={{ background: modalTab === 'draw' ? '#fff' : 'transparent', border: modalTab === 'draw' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
+                    style={{ background: modalSubTab === 'draw' ? '#fff' : 'transparent', border: modalSubTab === 'draw' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
                   >
                     <PenTool className="w-4 h-4" />
                   </button>
-                  {/* Upload icon */}
                   <button
-                    onClick={() => setModalTab('upload')}
-                    title="Upload"
+                    onClick={() => setModalSubTab('upload')}
+                    title="Upload image"
                     className="flex items-center justify-center w-9 h-9 rounded-lg transition"
-                    style={{ background: modalTab === 'upload' ? '#fff' : 'transparent', border: modalTab === 'upload' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
+                    style={{ background: modalSubTab === 'upload' ? '#fff' : 'transparent', border: modalSubTab === 'upload' ? '1px solid #e0e7ef' : '1px solid transparent', color: '#6b7280' }}
                   >
                     <UploadCloud className="w-4 h-4" />
                   </button>
                 </div>
               )}
 
-              {/* ── Type tab: font-style radio list ── */}
-              {modalTab === 'type' && (
+              {/* ── Type sub-tab: font-style radio list (Signature OR Initials) ── */}
+              {(modalTab === 'type' || modalTab === 'initials_tab') && modalSubTab === 'type' && (
                 <div className="flex-1 overflow-y-auto sig-font-list" style={{ padding: '12px 16px' }}>
                   <div className="border border-gray-200 rounded-lg overflow-hidden">
                     {SIG_FONTS.map((font, idx) => (
@@ -515,7 +564,7 @@ export default function Home() {
                         key={font.id}
                         className="flex items-center gap-4 px-4 py-3 cursor-pointer transition"
                         style={{
-                          background: sigConfig.font === font.id ? '#f0f9f0' : '#fff',
+                          background: sigConfig.font === font.id ? '#f0f4ff' : '#fff',
                           borderBottom: idx < SIG_FONTS.length - 1 ? '1px solid #f0f0f0' : 'none',
                         }}
                       >
@@ -525,10 +574,15 @@ export default function Home() {
                           value={font.id}
                           checked={sigConfig.font === font.id}
                           onChange={() => setSigConfig({ ...sigConfig, font: font.id })}
-                          className="w-4 h-4 accent-green-500 shrink-0"
+                          className="w-4 h-4 accent-blue-500 shrink-0"
                         />
-                        <span className={`flex-1 min-w-0 truncate ${font.cls}`} style={{ fontSize: font.size, color: sigConfig.color || '#1a1a1a', lineHeight: 1.1 }}>
-                          {sigConfig.name || 'Signature'}
+                        <span
+                          className={`flex-1 min-w-0 truncate ${font.cls}`}
+                          style={{ fontSize: font.size, color: sigConfig.color || '#1a1a1a', lineHeight: 1.1 }}
+                        >
+                          {modalTab === 'initials_tab'
+                            ? (sigConfig.initials || 'AB')
+                            : (sigConfig.name || 'Signature')}
                         </span>
                       </label>
                     ))}
@@ -536,11 +590,11 @@ export default function Home() {
                 </div>
               )}
 
-              {/* ── Draw tab ── */}
-              {modalTab === 'draw' && (
+              {/* ── Draw sub-tab ── */}
+              {(modalTab === 'type' || modalTab === 'initials_tab') && modalSubTab === 'draw' && (
                 <div className="flex-1 flex flex-col p-4 gap-3">
                   <div className="relative w-full rounded-xl border-2 border-gray-200 bg-gray-50 overflow-hidden flex-1"
-                    style={{ minHeight: 180 }}>
+                    style={{ minHeight: 160 }}>
                     <canvas
                       ref={drawingRef}
                       width={580}
@@ -555,48 +609,114 @@ export default function Home() {
                       onTouchMove={doDraw}
                       onTouchEnd={endDraw}
                     />
-                    {/* placeholder hint */}
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                      style={{ opacity: 0.35 }}>
-                      <span className="text-sm text-gray-400 font-medium select-none">Draw your signature here</span>
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ opacity: 0.35 }}>
+                      <span className="text-sm text-gray-400 font-medium select-none">Draw here</span>
                     </div>
                   </div>
-                  <button onClick={clearCanvas}
-                    className="self-start text-xs font-semibold text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition hover:border-red-200">
-                    Clear
-                  </button>
-                </div>
-              )}
-
-              {/* ── Upload tab ── */}
-              {modalTab === 'upload' && (
-                <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
-                  <div className="text-center">
-                    <UploadCloud className="w-10 h-10 opacity-30 mx-auto mb-2" />
-                    <p className="text-sm">Upload signature coming soon</p>
+                  <div className="flex items-center gap-2">
+                    <button onClick={undoStroke} disabled={drawHistoryRef.current.length === 0}
+                      title="Undo (Ctrl+Z)"
+                      className="text-xs font-semibold text-gray-500 hover:text-blue-600 border border-gray-200 rounded-lg px-3 py-1.5 transition disabled:opacity-30 flex items-center gap-1">
+                      &#x21a9; Undo
+                    </button>
+                    <button onClick={clearCanvas}
+                      className="text-xs font-semibold text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition">
+                      Clear
+                    </button>
+                    <span className="text-[10px] text-gray-300 ml-1">Ctrl+Z to undo</span>
                   </div>
                 </div>
               )}
 
-              {/* ── Initials tab / Company Stamp tab ── */}
-              {(modalTab === 'initials_tab' || modalTab === 'stamp') && (
-                <div className="flex-1 flex items-center justify-center p-6 text-gray-400">
-                  <div className="text-center">
-                    <BadgeCheck className="w-10 h-10 opacity-30 mx-auto mb-2" />
-                    <p className="text-sm">Coming soon</p>
-                  </div>
+              {/* ── Upload sub-tab ── */}
+              {(modalTab === 'type' || modalTab === 'initials_tab') && modalSubTab === 'upload' && (
+                <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4">
+                  <input
+                    ref={sigUploadInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const b64 = await readFileAsBase64(file);
+                      setUploadedSig(b64);
+                    }}
+                  />
+                  {uploadedSig ? (
+                    <div className="flex flex-col items-center gap-3 w-full">
+                      <div className="border-2 border-gray-200 rounded-xl overflow-hidden bg-gray-50 flex items-center justify-center" style={{ maxHeight: 140, width: '100%' }}>
+                        <img src={uploadedSig} alt="Uploaded signature" className="max-h-32 max-w-full object-contain" />
+                      </div>
+                      <button
+                        onClick={() => { setUploadedSig(null); sigUploadInputRef.current?.click(); }}
+                        className="text-xs font-semibold text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-4 py-1.5 transition"
+                      >
+                        Change image
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => sigUploadInputRef.current?.click()}
+                      className="flex flex-col items-center gap-3 border-2 border-dashed border-gray-300 rounded-xl px-10 py-8 hover:border-blue-400 hover:bg-blue-50 transition cursor-pointer w-full"
+                    >
+                      <UploadCloud className="w-8 h-8 text-gray-300" />
+                      <span className="text-sm font-semibold text-gray-400">Click to upload image</span>
+                      <span className="text-xs text-gray-300">PNG, JPG, SVG supported</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* ── Company Stamp tab ── */}
+              {modalTab === 'stamp' && (
+                <div className="flex-1 flex flex-col items-center justify-center p-5 gap-4">
+                  <input
+                    ref={stampInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const b64 = await readFileAsBase64(file);
+                      setStampImage(b64);
+                    }}
+                  />
+                  {stampImage ? (
+                    <div className="flex flex-col items-center gap-3 w-full">
+                      <div className="border-2 border-gray-200 rounded-xl overflow-hidden bg-gray-50 flex items-center justify-center" style={{ maxHeight: 160, width: '100%' }}>
+                        <img src={stampImage} alt="Company stamp" className="max-h-36 max-w-full object-contain" />
+                      </div>
+                      <button
+                        onClick={() => { setStampImage(null); stampInputRef.current?.click(); }}
+                        className="text-xs font-semibold text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg px-4 py-1.5 transition"
+                      >
+                        Change stamp
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => stampInputRef.current?.click()}
+                      className="flex flex-col items-center gap-3 border-2 border-dashed border-gray-300 rounded-xl px-10 py-8 hover:border-purple-400 hover:bg-purple-50 transition cursor-pointer w-full"
+                    >
+                      <BadgeCheck className="w-10 h-10 text-gray-300" />
+                      <span className="text-sm font-semibold text-gray-400">Upload company stamp</span>
+                      <span className="text-xs text-gray-300">PNG with transparent background works best</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
 
-            {/* ── Color picker row ── */}
-            {(modalTab === 'type' || modalTab === 'draw' || modalTab === 'initials_tab') && (
+            {/* ── Color picker row — shown for type/draw tabs (not stamp) ── */}
+            {modalTab !== 'stamp' && (
               <div className="flex items-center gap-3 px-8 py-3 border-t border-gray-100">
                 <span className="text-xs font-semibold text-gray-500">Color:</span>
                 {PRESET_COLORS.map(p => (
                   <button key={p.color}
                     onClick={() => setSigConfig({ ...sigConfig, color: p.color })}
-                    className="w-7 h-7 rounded-full border-2 transition flex items-center justify-center"
+                    className="w-7 h-7 rounded-full border-2 transition"
                     style={{
                       background: p.color,
                       borderColor: sigConfig.color === p.color ? '#94a3b8' : 'transparent',
@@ -605,15 +725,21 @@ export default function Home() {
                     title={p.label}
                   />
                 ))}
-                {/* Color wheel / custom picker */}
-                <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center"
+                {/* Custom color wheel */}
+                <label
+                  className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex-shrink-0"
                   style={{
                     background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
                     borderColor: !PRESET_COLORS.find(p => p.color === sigConfig.color) ? '#94a3b8' : '#e5e7eb',
-                    boxShadow: !PRESET_COLORS.find(p => p.color === sigConfig.color) ? `0 0 0 2px white, 0 0 0 4px ${sigConfig.color}` : 'none',
+                    boxShadow: !PRESET_COLORS.find(p => p.color === sigConfig.color)
+                      ? `0 0 0 2px white, 0 0 0 4px ${sigConfig.color}`
+                      : 'none',
                   }}
-                  title="Custom color">
-                  <input type="color" value={sigConfig.color}
+                  title="Custom color"
+                >
+                  <input
+                    type="color"
+                    value={sigConfig.color}
                     onChange={e => setSigConfig({ ...sigConfig, color: e.target.value })}
                     className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
                   />
@@ -631,7 +757,11 @@ export default function Home() {
               </button>
               <button
                 onClick={handleConfirmSigConfig}
-                disabled={!sigConfig.name.trim() || isUploading}
+                disabled={isUploading || (
+                  modalTab === 'stamp' ? !stampImage :
+                  modalSubTab === 'upload' ? !uploadedSig :
+                  !sigConfig.name.trim()
+                )}
                 className="text-white font-bold px-8 py-2.5 rounded-lg transition hover:opacity-90 text-sm disabled:opacity-50"
                 style={{ background: '#e8222c' }}
               >

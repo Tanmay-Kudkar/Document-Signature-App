@@ -93,16 +93,50 @@
 
 The app primarily serves two personas: the **Document Owner** (who requests signatures) and the **Signer** (who fulfills the request).
 
+### 🌟 Key Codebase Features
+- **Multi-Signer Orchestration**: "Several People" mode allows owners to assign specific fields (Signatures, Initials, Stamps, Names, Dates) to different external signers.
+- **Dynamic Signature Fields**: Drag, drop, and freely resize fields on top of an interactive PDF canvas (`react-pdf`).
+- **Flexible Signing Options**: Signers can draw their signature or type it using 5 different cursive fonts (Great Vibes, Dancing Script, Pacifico, etc.).
+- **Ink Colors & Customization**: Support for standard ink colors (Black, Red, Blue, Green) plus a full custom hex color wheel.
+- **Tokenized Public Links**: Secure, stateless external signature requests powered by JSON Web Tokens (JWT) and delivered via Nodemailer.
+- **Enterprise-Grade Audit Trail**: An unalterable PostgreSQL log tracking User Actions (Uploads, Signings, Rejections), Timestamps, Device User-Agents, and precisely extracted IP addresses (supporting Cloudflare/Vercel proxies).
+- **Immutable PDF Generation**: Once all parties sign, `pdf-lib` permanently burns the signatures and coordinates into the PDF.
+
+#### 🔍 Deep-Dive: Multi-Signer Orchestration & Link Generation
+- **Email-Based Workflow**: Document Owners can define an unlimited number of external signers by simply providing their names and emails.
+- **Dynamic Field Mapping**: Fields (Signature, Date, Initials, Name) can be distinctly assigned to specific users. The UI visually color-codes these fields (e.g., Alice's fields are blue, Bob's are green) to prevent confusion.
+- **Stateless Authentication (JWT)**: When the owner clicks "Send," the backend generates cryptographically signed JSON Web Tokens (JWT) containing the `documentId`, `receiverName`, and `receiverEmail`. These tokens are sent as URL parameters (e.g., `/sign?token=xyz...`), allowing signers to securely access *only* their specific fields without creating an account.
+- **Field Filtering via Token**: When a signer opens their unique link, the React frontend decrypts the token's payload and meticulously filters the canvas, displaying *only* the geometric fields assigned to that specific signer, ensuring complete data privacy and workflow integrity.
+
+#### 🔍 Deep-Dive: Interactive PDF Canvas & Formatting
+- **Absolute Positioning Engine**: We render raw PDFs in the browser using `react-pdf` and overlay a transparent interaction layer. As users drag and drop elements, we calculate their `(x, y)` percentages relative to the page dimensions, guaranteeing accurate placement regardless of screen size.
+- **8-Point Resizing**: We implemented a robust geometry engine mirroring Figma/Canva. Users can click any field and drag 8 distinct handles (NW, NE, SW, SE, N, S, E, W) to scale signatures and stamps precisely before finalizing.
+- **Typography & Font Engine**: For users who prefer typing, the platform supports injected cursive Google Fonts (`Great Vibes`, `Dancing Script`, `Sacramento`, `Pacifico`, `Pinyon Script`) parsed directly into HTML Canvas to generate rasterized, stylistically distinct signature images.
+- **Color Wheel Integration**: Signers can utilize a full HTML5 custom color picker (with a conic-gradient UI) to select their preferred ink color. This hex code is dynamically applied to `CanvasRenderingContext2D.fillStyle` to ensure exact color matching on the final document.
+
+#### 🔍 Deep-Dive: Enterprise-Grade Audit Trail & Database
+- **Unalterable PostgreSQL Ledger**: Every interaction (Upload, View, Sign, Reject) is strictly appended to the `audit_logs` table.
+- **Intelligent IP Extraction**: Our middleware `auditMiddleware.js` parses complex proxy architectures (like Vercel, Cloudflare, and Nginx headers like `x-forwarded-for`, `cf-connecting-ip`) to securely extract the signer's true origin IP, bypassing generic localhost (`::1`) obfuscation.
+- **Detailed Metadata Capture**: Beyond IPs, we log the exact `User-Agent`, geographical hints, and specialized JSON metadata (e.g., the precise reason a signer rejected a document, or the specific token used to authenticate).
+- **BYTEA Raw File Storage**: To prevent dependency on third-party buckets like AWS S3 and ensure strict data locality, raw PDF binary streams are uploaded via `multer` (memory storage) and directly inserted into PostgreSQL using the `BYTEA` data type.
+
+#### 🔍 Deep-Dive: Immutable PDF Generation (`pdf-lib`)
+- **Coordinate Translation**: When embedding signatures, the backend converts the frontend's percentage-based `(x, y)` coordinates into absolute PDF points based on the native `pdf-lib` page dimensions.
+- **Base64 Image Injection**: Signature paths generated from the HTML Canvas are transmitted as base64 PNGs. The backend parses these, embeds them natively into the PDF data stream, and flattens the document, rendering the signatures completely immutable and legally robust.
+
+
+### Role Capabilities
 | Capability | Document Owner | Signer |
 |---|---|---|
-| Register / Login | Yes | No (can sign via tokenized link) |
+| Register / Login | Yes | No (Signs instantly via JWT link) |
 | Upload PDF Documents | Yes | No |
-| Define Signature Coordinates | Yes | No |
-| Sign Documents | Yes | Yes |
-| Accept / Reject Signature | No | Yes |
-| View Real-time Status | Yes | Limited to assigned token |
-| Download Final Signed PDF | Yes | Yes (after completion) |
-| View Audit Trail (IP & Time) | Yes | No |
+| Define & Assign Fields | Yes | No |
+| Sign Assigned Fields | Yes (If "Only Me" mode) | Yes |
+| Choose Ink Colors & Fonts| Yes | Yes |
+| Accept / Reject Signature | No | Yes (With optional reasoning) |
+| View Real-time Status | Yes (Dashboard badges) | Limited to assigned token |
+| Download Final Signed PDF| Yes | Yes (After completion) |
+| View Audit Trail (IP logs)| Yes | No |
 
 ---
 
@@ -181,10 +215,10 @@ stateDiagram-v2
 ## 5. Domain Model and Data Schema
 
 ### 5.1 Core Entities
-- **Users**: Authentication details and profile.
-- **Documents**: Uploaded PDF paths, ownership, creation dates.
-- **Signatures**: Coordinates (`x`, `y`), assigned signer, status (`Pending`, `Signed`, `Rejected`).
-- **AuditLogs**: IP addresses, timestamps, actions performed on documents.
+- **Users**: Authentication details (bcrypt hashed passwords) and profiles.
+- **Documents**: Uploaded PDF buffers stored securely as `BYTEA`, metadata, owner links, and overall status (`draft`, `pending`, `completed`).
+- **Signatures**: Specific geometric coordinates (`x`, `y`, `w`, `h`), assigned receiver email, field type (`signature`, `initials`, `stamp`, `name`, `date`, `text`), and status.
+- **AuditLogs**: Captures IP addresses, timestamps, geolocation metadata (Country/City), and granular actions performed on specific documents (e.g., `DOCUMENT_UPLOADED`, `SIGNATURE_ADDED`, `DOCUMENT_COMPLETED`).
 
 ### 5.2 ER Diagram Reference
 

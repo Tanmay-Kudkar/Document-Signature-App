@@ -109,3 +109,27 @@ html { -ms-overflow-style: none !important; scrollbar-width: none !important; }
 button {
   cursor: pointer;
 }
+
+/* ── Responsive helpers ── */
+
+/* Show scrollbar on the left sidebar on small screens (horizontal scroll) */
+@media (max-width: 1023px) {
+  aside.custom-scrollbar::-webkit-scrollbar {
+    display: block !important;
+    height: 4px;
+  }
+}
+
+/* Ensure fields sidebar doesn't cause body scroll on mobile when it's a slide-over */
+@media (max-width: 1023px) {
+  .sidebar-open {
+    overflow: hidden;
+  }
+}
+
+/* Responsive PDF container padding */
+@media (max-width: 640px) {
+  .pdf-canvas-area {
+    padding: 8px !important;
+  }
+}

@@ -161,7 +161,7 @@ export default function SignedSuccess() {
         <div style={{ width: '100%', height: 1, background: '#f3f4f6', marginBottom: 24 }} />
 
         {/* ── NAVIGATION ACTIONS ── */}
-        <div style={{ display: 'flex', gap: 12, width: '100%' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, width: '100%' }}>
           <Link to="/dashboard"
             style={{
               flex: 1, height: 42, borderRadius: 10, border: '1.5px solid #e5e7eb',

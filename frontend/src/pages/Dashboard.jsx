@@ -120,9 +120,123 @@ export default function Dashboard() {
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
   const [deletingId, setDeletingId] = useState(null);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
-
-  // Status Filter
   const [statusFilter, setStatusFilter] = useState('all');
+
+  // ── Global Undo / Redo ──
+  const undoStackRef = useRef([]);
+  const redoStackRef = useRef([]);
+  const MAX_UNDO = 50;
+  const undoSyncTimerRef = useRef(null);
+
+  const pushUndo = (currentSigs) => {
+    undoStackRef.current.push(JSON.parse(JSON.stringify(currentSigs)));
+    if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
+    redoStackRef.current = []; // new action clears redo
+  };
+
+  const syncAfterUndoRedo = useCallback(async (restoredSigs) => {
+    // Debounced backend sync after undo/redo — update positions for all fields
+    if (!selectedDocumentId) return;
+    for (const sig of restoredSigs) {
+      try {
+        await updateSignatureCoords(selectedDocumentId, sig.id, {
+          pageNumber: sig.page_number ?? sig.pageNumber,
+          x: sig.x, y: sig.y, metadata: sig.metadata,
+        });
+      } catch {
+        // Field may have been deleted server-side; try re-creating it
+        try {
+          await createSignature(selectedDocumentId, {
+            pageNumber: sig.page_number ?? sig.pageNumber,
+            x: sig.x, y: sig.y, type: sig.type, metadata: sig.metadata,
+          });
+        } catch { /* best-effort */ }
+      }
+    }
+  }, [selectedDocumentId]);
+
+  const undo = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+    setSignatures(current => {
+      redoStackRef.current.push(JSON.parse(JSON.stringify(current)));
+      const restored = undoStackRef.current.pop();
+      // Debounced backend sync
+      clearTimeout(undoSyncTimerRef.current);
+      undoSyncTimerRef.current = setTimeout(() => syncAfterUndoRedo(restored), 1200);
+      return restored;
+    });
+    showToast('↩ Undo');
+  }, [syncAfterUndoRedo]);
+
+  const redo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    setSignatures(current => {
+      undoStackRef.current.push(JSON.parse(JSON.stringify(current)));
+      const restored = redoStackRef.current.pop();
+      clearTimeout(undoSyncTimerRef.current);
+      undoSyncTimerRef.current = setTimeout(() => syncAfterUndoRedo(restored), 1200);
+      return restored;
+    });
+    showToast('↪ Redo');
+  }, [syncAfterUndoRedo]);
+
+  // ── Global Undo / Redo ──
+  const undoStackRef = useRef([]);
+  const redoStackRef = useRef([]);
+  const MAX_UNDO = 50;
+  const undoSyncTimerRef = useRef(null);
+
+  const pushUndo = (currentSigs) => {
+    undoStackRef.current.push(JSON.parse(JSON.stringify(currentSigs)));
+    if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
+    redoStackRef.current = []; // new action clears redo
+  };
+
+  const syncAfterUndoRedo = useCallback(async (restoredSigs) => {
+    // Debounced backend sync after undo/redo — update positions for all fields
+    if (!selectedDocumentId) return;
+    for (const sig of restoredSigs) {
+      try {
+        await updateSignatureCoords(selectedDocumentId, sig.id, {
+          pageNumber: sig.page_number ?? sig.pageNumber,
+          x: sig.x, y: sig.y, metadata: sig.metadata,
+        });
+      } catch {
+        // Field may have been deleted server-side; try re-creating it
+        try {
+          await createSignature(selectedDocumentId, {
+            pageNumber: sig.page_number ?? sig.pageNumber,
+            x: sig.x, y: sig.y, type: sig.type, metadata: sig.metadata,
+          });
+        } catch { /* best-effort */ }
+      }
+    }
+  }, [selectedDocumentId]);
+
+  const undo = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+    setSignatures(current => {
+      redoStackRef.current.push(JSON.parse(JSON.stringify(current)));
+      const restored = undoStackRef.current.pop();
+      // Debounced backend sync
+      clearTimeout(undoSyncTimerRef.current);
+      undoSyncTimerRef.current = setTimeout(() => syncAfterUndoRedo(restored), 1200);
+      return restored;
+    });
+    showToast('↩ Undo');
+  }, [syncAfterUndoRedo]);
+
+  const redo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    setSignatures(current => {
+      undoStackRef.current.push(JSON.parse(JSON.stringify(current)));
+      const restored = redoStackRef.current.pop();
+      clearTimeout(undoSyncTimerRef.current);
+      undoSyncTimerRef.current = setTimeout(() => syncAfterUndoRedo(restored), 1200);
+      return restored;
+    });
+    showToast('↪ Redo');
+  }, [syncAfterUndoRedo]);
 
   // Email Modal
   const [emailModal, setEmailModal] = useState(null);
@@ -153,6 +267,46 @@ export default function Dashboard() {
   const [editText, setEditText] = useState('');
   const [selectedFieldId, setSelectedFieldId] = useState(null); // click-to-activate
   const [resizingInfo, setResizingInfo] = useState(null); // { fieldId, dir, anchorX, anchorY }
+
+  // Mobile responsive: toggle right sidebar
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [showMobileDocsSidebar, setShowMobileDocsSidebar] = useState(false);
+  const [isMobileView, setIsMobileView] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1024);
+  const [isSmallScreen, setIsSmallScreen] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileView(window.innerWidth < 1024);
+      setIsSmallScreen(window.innerWidth < 640);
+      // Auto-close mobile sidebars when resized to desktop
+      if (window.innerWidth >= 1024) {
+        setShowMobileSidebar(false);
+        setShowMobileDocsSidebar(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Mobile responsive: toggle right sidebar
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [showMobileDocsSidebar, setShowMobileDocsSidebar] = useState(false);
+  const [isMobileView, setIsMobileView] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1024);
+  const [isSmallScreen, setIsSmallScreen] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileView(window.innerWidth < 1024);
+      setIsSmallScreen(window.innerWidth < 640);
+      // Auto-close mobile sidebars when resized to desktop
+      if (window.innerWidth >= 1024) {
+        setShowMobileSidebar(false);
+        setShowMobileDocsSidebar(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Signature/Initials edit modal (ilovepdf style)
   const [sigEditModal, setSigEditModal] = useState(null); // { sig, tab: 'type'|'draw' }
@@ -527,6 +681,8 @@ export default function Dashboard() {
       // discard any locally-applied customizations (color, font, etc.) on existing
       // fields that haven't been fully flushed yet.
       if (newSig) {
+        pushUndo(signatures); // snapshot before adding new field
+        pushUndo(signatures); // snapshot before adding new field
         setSignatures(prev => [...prev, newSig]);
       } else {
         await refreshSigs(selectedDocumentId); // fallback if backend didn't return the sig
@@ -538,6 +694,8 @@ export default function Dashboard() {
   const handleFieldMouseDown = (e, sigId) => {
     e.stopPropagation();
     setSelectedFieldId(sigId);
+    pushUndo(signatures); // snapshot before move
+    pushUndo(signatures); // snapshot before move
     // Capture where inside the field the user grabbed (offset from the field's center)
     if (pageCanvasRef.current) {
       const rect = pageCanvasRef.current.getBoundingClientRect();
@@ -554,6 +712,8 @@ export default function Dashboard() {
   const handleResizeStart = (e, sig, dir) => {
     e.stopPropagation();
     e.preventDefault();
+    pushUndo(signatures); // snapshot before resize
+    pushUndo(signatures); // snapshot before resize
     if (!pageCanvasRef.current) return;
     const { w, h } = getFieldSize(sig);
     const rect = pageCanvasRef.current.getBoundingClientRect();
@@ -730,6 +890,8 @@ export default function Dashboard() {
 
   /* ── signature actions ── */
   const handleDeleteSig = async (sig) => {
+    pushUndo(signatures); // snapshot before delete
+    pushUndo(signatures); // snapshot before delete
     setDeletingId(sig.id);
     try { await deleteSignature(selectedDocumentId, sig.id); await refreshSigs(selectedDocumentId); showToast('Field removed.'); }
     catch (err) { showToast('⚠️ ' + (err.message || 'Error')); }
@@ -739,6 +901,34 @@ export default function Dashboard() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+      // Ctrl+Z → Undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      // Ctrl+Shift+Z or Ctrl+Y → Redo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey) || (e.key === 'Z' && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+
+      // Ctrl+Z → Undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      // Ctrl+Shift+Z or Ctrl+Y → Redo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey) || (e.key === 'Z' && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFieldId && !editingFieldId) {
         const sigToDelete = signatures.find(s => s.id === selectedFieldId);
         if (sigToDelete) {
@@ -750,7 +940,8 @@ export default function Dashboard() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFieldId, editingFieldId, signatures, selectedDocumentId]);
+  }, [selectedFieldId, editingFieldId, signatures, selectedDocumentId, undo, redo]);
+  }, [selectedFieldId, editingFieldId, signatures, selectedDocumentId, undo, redo]);
 
   const handleShare = async (sig) => {
     try {
@@ -784,6 +975,8 @@ export default function Dashboard() {
 
     if (sig) {
       // Editing existing placed stamp
+      pushUndo(signatures); // snapshot before stamp edit
+      pushUndo(signatures); // snapshot before stamp edit
       setSignatures(sigs => sigs.map(s =>
         s.id === sig.id ? { ...s, metadata } : s
       ));
@@ -801,6 +994,8 @@ export default function Dashboard() {
           type: 'stamp', metadata,
         });
         if (newSig) {
+          pushUndo(signatures); // snapshot before adding stamp
+          pushUndo(signatures); // snapshot before adding stamp
           setSignatures(prev => [...prev, newSig]);
         } else {
           await refreshSigs(selectedDocumentId);
@@ -858,6 +1053,8 @@ export default function Dashboard() {
       color: sigEditColor,
       ...(drawingDataUrl ? { drawingImage: drawingDataUrl } : {}),
     };
+    pushUndo(signatures); // snapshot before sig/initials edit
+    pushUndo(signatures); // snapshot before sig/initials edit
     setSignatures(sigs => sigs.map(s => s.id === sig.id ? { ...s, metadata: newMeta } : s));
     setSigEditModal(null);
     try {
@@ -909,6 +1106,8 @@ export default function Dashboard() {
     setEditingFieldId(null);
     if (!newText) return;
     // Optimistically update local state
+    pushUndo(signatures); // snapshot before text edit
+    pushUndo(signatures); // snapshot before text edit
     setSignatures(sigs => sigs.map(s =>
       s.id === sig.id ? { ...s, metadata: { ...(s.metadata || {}), text: newText } } : s
     ));
@@ -1133,6 +1332,20 @@ export default function Dashboard() {
   const isSigned  = selectedDocument?.status === 'signed';
   const pageSigs  = signatures.filter(s => (s.page_number ?? s.pageNumber) === currentPage);
 
+  const displayedDocuments = documents.filter(doc => {
+    if (statusFilter === 'all') return true;
+    if (statusFilter === 'signed') return doc.status === 'signed';
+    if (statusFilter === 'pending') return doc.status !== 'signed';
+    return true;
+  });
+
+  const displayedDocuments = documents.filter(doc => {
+    if (statusFilter === 'all') return true;
+    if (statusFilter === 'signed') return doc.status === 'signed';
+    if (statusFilter === 'pending') return doc.status !== 'signed';
+    return true;
+  });
+
   /* ════════════════════════════════════════════════════════ RENDER ═══ */
   return (
     <div style={{ height: 'calc(100vh - 56px)', display: 'flex', flexDirection: 'column', background: '#f0f1f5', overflow: 'hidden' }}>
@@ -1146,8 +1359,10 @@ export default function Dashboard() {
 
       {/* ── Page nav toolbar ── */}
       {selectedDocument && (
-        <div className="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2 border-b border-gray-200 bg-white min-h-[48px] h-auto">
-          <div className="flex items-center bg-gray-100 rounded" style={{ height: 30 }}>
+        <div className="shrink-0 flex flex-wrap items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 border-b border-gray-200 bg-white min-h-[48px] h-auto">
+          <div className="flex items-center bg-gray-100 rounded shrink-0" style={{ height: 30 }}>
+        <div className="shrink-0 flex flex-wrap items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 border-b border-gray-200 bg-white min-h-[48px] h-auto">
+          <div className="flex items-center bg-gray-100 rounded shrink-0" style={{ height: 30 }}>
             <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage <= 1}
               className="px-2 h-full flex items-center text-gray-600 hover:bg-gray-200 disabled:opacity-30 rounded-l transition">
               <ChevronLeft className="w-3.5 h-3.5" />
@@ -1157,38 +1372,47 @@ export default function Dashboard() {
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
-          <div className="flex items-center gap-1 text-sm text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white">
+          <div className="flex items-center gap-1 text-sm text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white shrink-0">
+          <div className="flex items-center gap-1 text-sm text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white shrink-0">
             <span className="font-bold">{currentPage}</span><span className="text-gray-400">/</span><span>{numPages || 1}</span>
           </div>
-          <div className="relative flex items-center">
+          <div className="relative flex items-center shrink-0">
+          <div className="relative flex items-center shrink-0">
             <select
               value={selectedDocumentId || ''}
               onChange={(e) => setSelectedDocumentId(e.target.value)}
-              className="appearance-none bg-white border border-gray-200 rounded px-3 py-1 pr-8 text-sm font-medium text-gray-700 outline-none hover:bg-gray-50 transition cursor-pointer max-w-[250px] truncate"
+              className="appearance-none bg-white border border-gray-200 rounded px-3 py-1 pr-8 text-sm font-medium text-gray-700 outline-none hover:bg-gray-50 transition cursor-pointer max-w-[180px] sm:max-w-[250px] truncate"
+              className="appearance-none bg-white border border-gray-200 rounded px-3 py-1 pr-8 text-sm font-medium text-gray-700 outline-none hover:bg-gray-50 transition cursor-pointer max-w-[180px] sm:max-w-[250px] truncate"
             >
-              {documents.map(doc => (
+              {displayedDocuments.map(doc => (
+              {displayedDocuments.map(doc => (
                 <option key={doc.id} value={doc.id}>{doc.originalName}</option>
               ))}
             </select>
             <ChevronDown className="absolute right-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
           </div>
           <div className="flex-1" />
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {isSigned && (
               <button onClick={() => handleDownload(true)} disabled={isOpeningFile}
-                className="flex items-center gap-1.5 text-xs font-bold text-white px-3 py-1.5 rounded-lg transition hover:opacity-90"
+                className="flex items-center gap-1.5 text-xs font-bold text-white px-2 sm:px-3 py-1.5 rounded-lg transition hover:opacity-90"
+                className="flex items-center gap-1.5 text-xs font-bold text-white px-2 sm:px-3 py-1.5 rounded-lg transition hover:opacity-90"
                 style={{ background: '#22c55e' }}>
                 <Download className="w-3.5 h-3.5" />
-                Download Signed
+                <span className="hidden sm:inline">Download Signed</span>
+                <span className="hidden sm:inline">Download Signed</span>
               </button>
             )}
             <NeonSweepButton onClick={() => handleDownload(false)}
-              tone="slate" size="sm" className="px-4 text-xs font-semibold">
+              tone="slate" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
+              tone="slate" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
               Open
             </NeonSweepButton>
             {token && (
               <NeonSweepButton onClick={handleDelete}
-                tone="danger" size="sm" className="px-4 text-xs font-semibold">
+                tone="danger" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
+                tone="danger" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
                 Delete
               </NeonSweepButton>
             )}
@@ -1197,10 +1421,34 @@ export default function Dashboard() {
       )}
 
       {/* ── Three-panel editor ── */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-auto lg:overflow-hidden">
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+
+        {/* Mobile Documents Overlay Backdrop */}
+        {isMobileView && showMobileDocsSidebar && (
+          <div className="fixed inset-0 bg-black/40 z-[85] animate-fade-in" onClick={() => setShowMobileDocsSidebar(false)} />
+        )}
 
         {/* ── LEFT: thumbnail strip ── */}
-        <aside className="shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-row lg:flex-col overflow-x-auto lg:overflow-y-auto custom-scrollbar w-full lg:w-[160px]">
+        <aside className={`shrink-0 bg-white lg:border-r border-gray-200 flex flex-col overflow-y-auto custom-scrollbar
+          fixed lg:static inset-x-0 bottom-0 lg:inset-auto lg:left-0 z-[90] w-full lg:w-[160px]
+          transition-transform duration-300 ease-out shadow-[0_-10px_40px_rgba(0,0,0,0.1)] lg:shadow-none
+          rounded-t-3xl lg:rounded-none
+          ${isMobileView ? (showMobileDocsSidebar ? 'translate-y-0' : 'translate-y-full') : 'translate-x-0'}
+        `} style={{ maxHeight: isMobileView ? '85vh' : undefined }}>
+          {/* Mobile Header */}
+          {isMobileView && (
+            <div className="flex flex-col items-center pt-3 pb-3 px-5 border-b border-gray-100 bg-white shrink-0 sticky top-0 z-10 rounded-t-3xl">
+              <div className="w-12 h-1.5 bg-gray-200 rounded-full mb-4" />
+              <div className="flex items-center justify-between w-full">
+                <span className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-[#e8222c]" /> Documents
+                </span>
+                <button onClick={() => setShowMobileDocsSidebar(false)} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors">
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+            </div>
+          )}
           {isLoadingDocuments ? (
             <div className="p-3 space-y-2">
               {[1,2].map(i => <div key={i} className="h-20 bg-gray-100 rounded animate-pulse" />)}
@@ -1208,14 +1456,44 @@ export default function Dashboard() {
           ) : (
             <>
               {documents.length > 0 && (
-                <div className="p-2 border-r lg:border-r-0 lg:border-b border-gray-100 flex flex-row lg:flex-col gap-1 items-stretch shrink-0">
-                  <div className="flex items-center justify-between px-2 pb-2 mb-1 border-b border-gray-100">
+                <div className="p-2 border-b border-gray-100 flex flex-col gap-1 items-stretch shrink-0">
+                  {!isOnlyMe && documents.length > 0 && (
+                    <div className="px-2 pb-2 mb-1 border-b border-gray-100 flex flex-col gap-2 shrink-0">
+                      <select 
+                        value={statusFilter}
+                        onChange={e => setStatusFilter(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-[11px] font-bold text-gray-600 outline-none hover:bg-gray-100 transition cursor-pointer w-full focus:ring-1 focus:ring-gray-200"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="pending">⏳ Pending</option>
+                        <option value="signed">✅ Signed</option>
+                      </select>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between px-2 pb-2 mb-1 border-b border-gray-100 shrink-0">
+                <div className="p-2 border-b border-gray-100 flex flex-col gap-1 items-stretch shrink-0">
+                  {!isOnlyMe && documents.length > 0 && (
+                    <div className="px-2 pb-2 mb-1 border-b border-gray-100 flex flex-col gap-2 shrink-0">
+                      <select 
+                        value={statusFilter}
+                        onChange={e => setStatusFilter(e.target.value)}
+                        className="bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-[11px] font-bold text-gray-600 outline-none hover:bg-gray-100 transition cursor-pointer w-full focus:ring-1 focus:ring-gray-200"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="pending">⏳ Pending</option>
+                        <option value="signed">✅ Signed</option>
+                      </select>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between px-2 pb-2 mb-1 border-b border-gray-100 shrink-0">
                     <label className="flex items-center gap-2 cursor-pointer group">
                       <input 
                         type="checkbox" 
-                        checked={documents.length > 0 && checkedDocumentIds.length === documents.length}
+                        checked={displayedDocuments.length > 0 && checkedDocumentIds.length === displayedDocuments.length}
+                        checked={displayedDocuments.length > 0 && checkedDocumentIds.length === displayedDocuments.length}
                         onChange={(e) => {
-                          if (e.target.checked) setCheckedDocumentIds(documents.map(d => d.id));
+                          if (e.target.checked) setCheckedDocumentIds(displayedDocuments.map(d => d.id));
+                          if (e.target.checked) setCheckedDocumentIds(displayedDocuments.map(d => d.id));
                           else setCheckedDocumentIds([]);
                         }}
                         className="w-3.5 h-3.5 text-[#e8222c] bg-white border-gray-300 rounded focus:ring-[#e8222c] cursor-pointer accent-[#e8222c] transition-all"
@@ -1225,16 +1503,19 @@ export default function Dashboard() {
                   </div>
 
                   {checkedDocumentIds.length > 0 && (
-                    <button onClick={() => setShowBulkDeleteModal(true)} className="w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
+                    <button onClick={() => setShowBulkDeleteModal(true)} className="shrink-0 w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
+                    <button onClick={() => setShowBulkDeleteModal(true)} className="shrink-0 w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
                       <Trash2 className="w-3.5 h-3.5" />
                       Delete Selected ({checkedDocumentIds.length})
                     </button>
                   )}
-                  {documents.map(doc => {
+                  {displayedDocuments.map(doc => {
+                  {displayedDocuments.map(doc => {
                     const isSel = doc.id === selectedDocumentId;
                     const isChecked = checkedDocumentIds.includes(doc.id);
                     return (
-                      <div key={doc.id} className={`flex items-center w-[160px] lg:w-full shrink-0 rounded-xl transition-all border ${isSel ? 'bg-red-50 border-[#e8222c]/40 shadow-sm' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
+                      <div key={doc.id} className={`flex items-center w-full shrink-0 rounded-xl transition-all border ${isSel ? 'bg-red-50 border-[#e8222c]/40 shadow-sm' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
+                      <div key={doc.id} className={`flex items-center w-full shrink-0 rounded-xl transition-all border ${isSel ? 'bg-red-50 border-[#e8222c]/40 shadow-sm' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
                         <label className="pl-3 py-2 flex items-center justify-center cursor-pointer mb-0">
                           <input 
                             type="checkbox" 
@@ -1264,7 +1545,8 @@ export default function Dashboard() {
               )}
 
               {numPages > 0 && (
-                <div className="flex flex-row lg:flex-col items-center gap-3 p-3 shrink-0">
+                <div className="flex flex-row lg:flex-col overflow-x-auto lg:overflow-visible items-center gap-3 p-3 shrink-0 custom-scrollbar">
+                <div className="flex flex-row lg:flex-col overflow-x-auto lg:overflow-visible items-center gap-3 p-3 shrink-0 custom-scrollbar">
                   {Array.from({ length: numPages }, (_, i) => i + 1).map(pg => (
                     <button key={pg} onClick={() => setCurrentPage(pg)} className="flex flex-col items-center gap-1 group transition">
                       <div className={`border-2 rounded overflow-hidden transition ${currentPage === pg ? 'border-[#e8222c] shadow-md' : 'border-gray-200 group-hover:border-gray-400'}`} style={{ width: 112 }}>
@@ -1293,7 +1575,8 @@ export default function Dashboard() {
         {/* ── CENTER: PDF canvas ── */}
         <main ref={pdfWrapperRef}
           className="flex-1 overflow-auto custom-scrollbar flex justify-center items-start"
-          style={{ background: '#f0f1f5', padding: 32 }}
+          style={{ background: '#f0f1f5', padding: isSmallScreen ? 12 : 32, userSelect: 'none', WebkitUserSelect: 'none' }}
+          style={{ background: '#f0f1f5', padding: isSmallScreen ? 12 : 32, userSelect: 'none', WebkitUserSelect: 'none' }}
           onClick={() => { if (wasDraggingRef.current) return; setSelectedFieldId(null); setEditingFieldId(null); }}>
           {!selectedDocument && !isLoadingDocument ? (
             <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
@@ -1441,10 +1724,14 @@ export default function Dashboard() {
                     onDoubleClick={e => handleFieldDoubleClick(e, sig)}>
 
                     {sig.status === 'signed' ? (
-                      <div className="flex items-center gap-2 rounded px-3 py-1.5 h-full"
-                        style={{ background: 'rgba(240, 253, 244, 1)', border: '1.5px solid #86efac' }}>
-                        <Check className="w-3.5 h-3.5 text-green-500" strokeWidth={3} />
-                        <span className="text-xs font-bold text-green-700">Signed</span>
+                      <div className="absolute -top-3 -right-3 flex items-center justify-center rounded-full w-5 h-5 shadow-sm"
+                        style={{ background: '#22c55e', border: '2px solid white' }}
+                        title="Signed">
+                        <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                      <div className="absolute -top-3 -right-3 flex items-center justify-center rounded-full w-5 h-5 shadow-sm"
+                        style={{ background: '#22c55e', border: '2px solid white' }}
+                        title="Signed">
+                        <Check className="w-3 h-3 text-white" strokeWidth={3} />
                       </div>
                     ) : isSelected ? (
                       /* ── SELECTED: full card with header + resize handles ── */
@@ -1561,10 +1848,61 @@ export default function Dashboard() {
           )}
         </main>
 
+        {/* ── Mobile sidebar toggle button (visible only on <lg) ── */}
+        {!showMobileDocsSidebar && (
+          <button
+            className="lg:hidden fixed bottom-6 right-6 z-[60] flex items-center gap-2 bg-[#e8222c] text-white font-bold px-4 py-3 rounded-2xl shadow-xl hover:opacity-90 active:scale-95 transition-all"
+            style={{ boxShadow: '0 8px 30px rgba(232,34,44,0.35)' }}
+            onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+          >
+            <PenTool className="w-5 h-5" />
+            <span className="text-sm">Fields</span>
+            {signatures.length > 0 && (
+              <span className="bg-white text-[#e8222c] text-[10px] font-black rounded-full w-5 h-5 flex items-center justify-center">{signatures.length}</span>
+            )}
+          </button>
+        )}
+
+        {/* ── Mobile sidebar backdrop ── */}
+        {showMobileSidebar && (
+          <div
+            className="lg:hidden fixed inset-0 z-[70] bg-black/30"
+            onClick={() => setShowMobileSidebar(false)}
+          />
+        )}
+
         {/* ── RIGHT: Signing options ── */}
-        <aside className="shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden w-full lg:w-[320px]">
-          <div className="shrink-0 flex items-center px-6 border-b border-gray-100" style={{ height: 56 }}>
+        <aside
+          className={`shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden
+            fixed lg:static inset-y-0 right-0 z-[80] w-[85vw] sm:w-[340px] lg:w-[320px]
+            transition-transform duration-300 ease-out
+            ${showMobileSidebar ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
+          `}
+          style={{ top: 0, boxShadow: showMobileSidebar ? '-8px 0 40px rgba(0,0,0,0.15)' : 'none' }}
+        >
+          <div className="shrink-0 flex items-center justify-between px-4 sm:px-6 border-b border-gray-100" style={{ height: 56 }}>
+        <aside
+          className={`shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden
+            fixed lg:static inset-y-0 right-0 z-[80] w-[85vw] sm:w-[340px] lg:w-[320px]
+            transition-transform duration-300 ease-out
+            ${showMobileSidebar ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
+          `}
+          style={{ top: 0, boxShadow: showMobileSidebar ? '-8px 0 40px rgba(0,0,0,0.15)' : 'none' }}
+        >
+          <div className="shrink-0 flex items-center justify-between px-4 sm:px-6 border-b border-gray-100" style={{ height: 56 }}>
             <h2 className="font-bold text-gray-900" style={{ fontSize: 20 }}>Signing options</h2>
+            <button
+              className="lg:hidden p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
+              onClick={() => setShowMobileSidebar(false)}
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <button
+              className="lg:hidden p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
+              onClick={() => setShowMobileSidebar(false)}
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-5 space-y-6">
@@ -2156,6 +2494,32 @@ export default function Dashboard() {
                     <button key={p.color} onClick={() => setSigEditColor(p.color)} className="w-7 h-7 rounded-full border-2 transition"
                       style={{ background: p.color, borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent', boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none' }} title={p.label} />
                   ))}
+                  {/* Custom color picker */}
+                  <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center shrink-0 transition"
+                    style={{
+                      background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                      borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
+                      boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
+                    }}
+                    title="Custom color">
+                    <input type="color" value={sigEditColor}
+                      onChange={e => setSigEditColor(e.target.value)}
+                      className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                    />
+                  </label>
+                  {/* Custom color picker */}
+                  <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center shrink-0 transition"
+                    style={{
+                      background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                      borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
+                      boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
+                    }}
+                    title="Custom color">
+                    <input type="color" value={sigEditColor}
+                      onChange={e => setSigEditColor(e.target.value)}
+                      className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                    />
+                  </label>
                 </div>
               )}
 
@@ -2474,6 +2838,15 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Mobile Floating Documents Button */}
+      {isMobileView && !showMobileDocsSidebar && !showMobileSidebar && (
+        <button onClick={() => setShowMobileDocsSidebar(true)}
+          className="fixed bottom-6 left-6 z-[45] bg-[#e8222c] text-white flex items-center justify-center gap-2 px-4 py-3 rounded-full shadow-xl hover:bg-red-700 transition-colors animate-fade-in">
+          <FileText className="w-5 h-5" />
+          <span className="font-bold text-sm">Documents</span>
+        </button>
       )}
 
     </div>

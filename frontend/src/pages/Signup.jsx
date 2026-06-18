@@ -165,7 +165,7 @@ const Signup = () => {
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   className="block w-full pl-11 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-500/20 focus:border-[#e5322d] focus:bg-white transition-all outline-none text-gray-900 font-medium"
-                  placeholder="John Doe"
+                  placeholder="Enter Your Full Name"
                   autoComplete="name"
                 />
               </div>
@@ -183,7 +183,8 @@ const Signup = () => {
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   className="block w-full pl-11 pr-4 py-3.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-500/20 focus:border-[#e5322d] focus:bg-white transition-all outline-none text-gray-900 font-medium"
-                  placeholder="name@company.com"
+                  placeholder="username@example.com"
+                  placeholder="username@example.com"
                   autoComplete="email"
                 />
               </div>

@@ -13,7 +13,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 import {
   ChevronLeft, ChevronRight, X, Check, FileSignature, Users,
   PenTool, Type, Calendar, AlignLeft, BadgeCheck, UploadCloud,
-  PlayCircle, User, ChevronRight as ChevronRightIcon
+  PlayCircle, User, ChevronRight as ChevronRightIcon, Settings
 } from 'lucide-react';
 
 const SIG_FONTS = [
@@ -69,10 +69,27 @@ export default function Sign() {
   const [capturedImage, setCapturedImage] = useState(null);
   const [sigEditColor, setSigEditColor] = useState('#1a1a1a');
   
-  /* Resizing state */
+  /* Resizing & Dragging state */
   const [resizingInfo, setResizingInfo] = useState(null);
   const dragOffsetRef = useRef({ ox: 0, oy: 0 });
   const wasDraggingRef = useRef(false);
+  const [isDraggingField, setIsDraggingField] = useState(false);
+  const [isSelected, setIsSelected] = useState(true);
+
+  /* Mobile responsiveness */
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [isMobileView, setIsMobileView] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1024);
+  const [isSmallScreen, setIsSmallScreen] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileView(window.innerWidth < 1024);
+      setIsSmallScreen(window.innerWidth < 640);
+      if (window.innerWidth >= 1024) setShowMobileSidebar(false);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   
   const [stampImageB64, setStampImageB64] = useState(null);
   const [uploadedSigImage, setUploadedSigImage] = useState(null);
@@ -130,6 +147,18 @@ export default function Sign() {
         const data = await validateTokenApi(token);
         setSignature(data.signature);
         setDocData(data.document);
+        
+        const fType = data.signature.type || 'signature';
+        const fieldDefs = {
+          'signature': { color: '#e8222c' },
+          'initials':  { color: '#e8222c' },
+          'name':      { color: '#1a1a1a' },
+          'date':      { color: '#1a1a1a' },
+          'text':      { color: '#1a1a1a' },
+          'stamp':     { color: '#8b5cf6' },
+        };
+        const def = fieldDefs[fType] || fieldDefs['signature'];
+        setSigEditColor(data.signature.metadata?.color || def.color);
         
         // If already signed, directly redirect to download success page!
         if (data.signature.status === 'signed') {
@@ -235,14 +264,45 @@ export default function Sign() {
         ...s, x: newX, y: newY, 
         metadata: { ...(s.metadata || {}), w: Math.round(newW), h: Math.round(newH), padTop, padBottom, padLeft, padRight }
       }));
+    } else if (isDraggingField && pdfWrapperRef.current && signature) {
+      const rect = pdfWrapperRef.current.getBoundingClientRect();
+      const meta = signature.metadata || {};
+      const w = meta.w || 200;
+      const h = meta.h || 50;
+
+      const mx = e.clientX - dragOffsetRef.current.ox - rect.left;
+      const my = e.clientY - dragOffsetRef.current.oy - rect.top;
+
+      const wPct = (w / rect.width) * 100;
+      const hPct = (h / rect.height) * 100;
+      const minX = wPct / 2;
+      const maxX = 100 - wPct / 2;
+      const minY = hPct / 2;
+      const maxY = 100 - hPct / 2;
+
+      const newX = Math.max(minX, Math.min(maxX, (mx / rect.width) * 100));
+      const newY = Math.max(minY, Math.min(maxY, (my / rect.height) * 100));
+
+      setSignature(s => ({ ...s, x: newX, y: newY }));
     }
   };
 
+  const handleFieldMouseDown = (e) => {
+    e.stopPropagation();
+    if (!pdfWrapperRef.current || !signature) return;
+    const rect = pdfWrapperRef.current.getBoundingClientRect();
+    const centerX = (signature.x / 100) * rect.width + rect.left;
+    const centerY = (signature.y / 100) * rect.height + rect.top;
+    dragOffsetRef.current = { ox: e.clientX - centerX, oy: e.clientY - centerY };
+    setIsDraggingField(true);
+  };
+
   const handleGlobalMouseUp = (e) => {
-    if (resizingInfo) {
+    if (resizingInfo || isDraggingField) {
       wasDraggingRef.current = true;
       setTimeout(() => { wasDraggingRef.current = false; }, 0);
       setResizingInfo(null);
+      setIsDraggingField(false);
     }
   };
 
@@ -253,7 +313,7 @@ export default function Sign() {
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
-  }, [resizingInfo]);
+  }, [resizingInfo, isDraggingField, signature]);
 
   /* ── Sign ── */
   const handleSign = async () => {
@@ -597,8 +657,9 @@ export default function Sign() {
           {/* ── CENTER: PDF canvas ── */}
           <main
             ref={pdfWrapperRef}
-            className="flex-1 overflow-auto custom-scrollbar flex justify-center items-start"
-            style={{ background: '#f0f1f5', padding: 32 }}
+            className="flex-1 overflow-auto custom-scrollbar flex justify-center items-start relative"
+            style={{ background: '#f0f1f5', padding: isSmallScreen ? 12 : 32, userSelect: 'none', WebkitUserSelect: 'none' }}
+            onClick={() => setIsSelected(false)}
           >
             <div className="relative" style={{ boxShadow: '0 4px 32px rgba(0,0,0,0.18)' }}>
               {pdfFileSource && (
@@ -645,9 +706,16 @@ export default function Sign() {
                         width: w,
                         height: h,
                         transform: 'translate(-50%, -50%)',
-                        cursor: 'pointer'
+                        cursor: isDraggingField ? 'grabbing' : 'grab'
                       }}
+                      onMouseDown={handleFieldMouseDown}
                       onClick={(e) => {
+                        e.stopPropagation();
+                        if (wasDraggingRef.current) return;
+                        setIsSelected(true);
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
                         if (wasDraggingRef.current) return;
                         const typeVal = signature?.type || 'signature';
                         if (typeVal === 'stamp') {
@@ -662,43 +730,36 @@ export default function Sign() {
                         setShowModal(true);
                       }}
                     >
-                      {isSigned ? (
-                        <div className="flex items-center justify-center w-full h-full rounded"
-                          style={{
-                            background: 'transparent',
-                            border: '1.5px solid transparent',
-                            paddingTop: 16 + padTop,
-                            paddingBottom: padBottom,
-                            paddingLeft: padLeft,
-                            paddingRight: padRight,
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.border = `1.5px dashed ${def.color}88`}
-                          onMouseLeave={e => e.currentTarget.style.border = '1.5px solid transparent'}
-                        >
-                          {capturedImage ? (
-                            <img src={capturedImage} alt="Signature" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                      <div className="flex items-center justify-center w-full h-full rounded"
+                        style={{
+                          background: isSigned ? 'transparent' : `${def.color}11`,
+                          border: `1.5px solid ${def.color}`,
+                          paddingTop: 16 + padTop,
+                          paddingBottom: padBottom,
+                          paddingLeft: padLeft,
+                          paddingRight: padRight,
+                          backdropFilter: 'blur(1px)',
+                        }}
+                      >
+                        {isSigned ? (
+                          capturedImage ? (
+                            <img src={capturedImage} alt="Signature" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} draggable={false} />
                           ) : (
-                            <div className={currentFont.cls} style={{ fontSize: currentFont.size, color: '#1a1a1a', whiteSpace: 'nowrap' }}>
+                            <div className={currentFont.cls} style={{ fontSize: currentFont.size, color: sigEditColor, whiteSpace: 'nowrap' }}>
                               {fType === 'initials' ? initials : name}
                             </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="flex flex-col rounded overflow-hidden w-full h-full transition-shadow hover:shadow-md"
-                          style={{ background: `${def.bg}ee`, border: `2px solid ${def.color}` }}>
-                          <div className="shrink-0 flex items-center justify-center gap-1 px-1.5 border-b" style={{ height: 16, borderColor: `${def.color}33`, background: `${def.color}22` }}>
-                            <span className="font-bold truncate" style={{ color: def.color, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{def.label}</span>
-                          </div>
-                          <div className="flex-1 flex items-center justify-center">
+                          )
+                        ) : (
+                          <div className="flex-1 flex items-center justify-center opacity-50">
                              <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white shadow-sm" style={{ color: def.color }}>
                                <PenTool className="w-3.5 h-3.5" />
                              </div>
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </div>
                       
                       {/* Resize handles */}
-                      {[
+                      {isSelected && [
                         { dir: 'nw', style: { top: 0, left: 0,    transform: 'translate(-50%,-50%)', cursor: 'nw-resize' } },
                         { dir: 'ne', style: { top: 0, right: 0,   transform: 'translate(50%,-50%)',  cursor: 'ne-resize' } },
                         { dir: 'sw', style: { bottom: 0, left: 0,  transform: 'translate(-50%,50%)', cursor: 'sw-resize' } },
@@ -709,8 +770,8 @@ export default function Sign() {
                         { dir: 's', style: { bottom: 0, left: '50%', transform: 'translate(-50%,50%)',  cursor: 's-resize' } },
                       ].map(({ dir, style }) => (
                         <div key={dir}
-                          className="absolute w-3 h-3 bg-white rounded-sm z-30 border-2"
-                          style={{ ...style, borderColor: def.color }}
+                          className="absolute w-3 h-3 bg-white rounded-full z-30"
+                          style={{ ...style, border: `2px solid ${def.color}` }}
                           onMouseDown={e => handleResizeStart(e, signature, dir)}
                           onClick={e => e.stopPropagation()} />
                       ))}
@@ -720,11 +781,53 @@ export default function Sign() {
             </div>
           </main>
 
+          {/* ── Mobile Sidebar Toggle & Floating Sign Button ── */}
+          <div className="lg:hidden fixed bottom-6 right-6 z-[60] flex flex-col gap-3">
+            <button
+              className="flex items-center gap-2 bg-white text-gray-800 font-bold px-4 py-3 rounded-2xl shadow-xl hover:bg-gray-50 active:scale-95 transition-all border border-gray-200"
+              style={{ boxShadow: '0 8px 30px rgba(0,0,0,0.1)' }}
+              onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+            >
+              <Settings className="w-5 h-5" />
+              <span className="text-sm">Options</span>
+            </button>
+            <button
+              onClick={handleSign}
+              disabled={signing || !isSigned}
+              className="flex items-center gap-2 text-white font-bold px-5 py-3 rounded-2xl shadow-xl hover:opacity-90 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: '#e8222c', boxShadow: '0 8px 30px rgba(232,34,44,0.35)' }}
+            >
+              <Check className="w-5 h-5" />
+              <span className="text-sm">{signing ? 'Signing...' : 'Sign'}</span>
+            </button>
+          </div>
+
+          {/* ── Mobile sidebar backdrop ── */}
+          {showMobileSidebar && (
+            <div
+              className="lg:hidden fixed inset-0 z-[70] bg-black/30"
+              onClick={() => setShowMobileSidebar(false)}
+            />
+          )}
+
           {/* ── RIGHT: Signing Options ── */}
-          <aside className="hidden lg:flex shrink-0 flex-col bg-white border-l border-gray-200" style={{ width: 320 }}>
+          <aside
+            className={`shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden
+              fixed lg:static inset-y-0 right-0 z-[80] w-[85vw] sm:w-[340px] lg:w-[320px]
+              transition-transform duration-300 ease-out
+              ${showMobileSidebar ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
+            `}
+            style={{ top: 0, boxShadow: showMobileSidebar ? '-8px 0 40px rgba(0,0,0,0.15)' : 'none' }}
+          >
             {/* Header */}
-            <div className="shrink-0 flex items-center px-6 border-b border-gray-100" style={{ height: 56 }}>
+            <div className="shrink-0 flex items-center justify-between px-6 border-b border-gray-100" style={{ height: 56 }}>
               <h2 className="font-bold text-gray-900" style={{ fontSize: 22 }}>Signing options</h2>
+              <button
+                className="lg:hidden p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
+                onClick={() => setShowMobileSidebar(false)}
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-5 space-y-6">
