@@ -12,6 +12,9 @@ import {
     generateSignatureToken,
     validateSignatureToken,
     signWithToken,
+    emailSignatureLink,
+    getAuditLogs,
+    saveSeveralPeopleConfig
 } from '../controllers/docController.js';
 import { authenticateToken, optionalAuthenticateToken } from '../middlewares/authMiddleware.js';
 import { upload } from '../middlewares/uploadMiddleware.js';
@@ -30,6 +33,7 @@ router.post('/signatures/sign', signWithToken);
 router.get('/', authenticateToken, getDocuments);
 router.get('/:documentId', authenticateToken, getDocumentById);
 router.delete('/:documentId', authenticateToken, deleteDocument);
+router.get('/:documentId/audit', authenticateToken, getAuditLogs);
 
 // Signatures Management (Owner only)
 router.post('/:documentId/signatures', authenticateToken, addSignature);
@@ -37,5 +41,9 @@ router.get('/:documentId/signatures', authenticateToken, getSignatures);
 router.put('/:documentId/signatures/:signatureId', authenticateToken, updateSignatureCoords);
 router.delete('/:documentId/signatures/:signatureId', authenticateToken, removeSignature);
 router.post('/signatures/:signatureId/token', authenticateToken, generateSignatureToken);
+router.post('/signatures/:signatureId/email', authenticateToken, emailSignatureLink);
+
+// Several People Configuration
+router.post('/:documentId/several-people-config', optionalAuthenticateToken, saveSeveralPeopleConfig);
 
 export default router;

@@ -75,6 +75,8 @@ export const generateSignatureToken = async (signatureId) => {
 export const uploadDocument = async (file) => {
   const formData = new FormData();
   formData.append('document', file);
+  const signingMode = localStorage.getItem('signingMode') || 'only_me';
+  formData.append('signingMode', signingMode);
 
   const data = await request('/api/docs/upload', {
     method: 'POST',
@@ -82,6 +84,15 @@ export const uploadDocument = async (file) => {
   });
 
   return data.document;
+};
+
+export const saveSeveralPeopleConfig = async (documentId, receivers, settings) => {
+  const data = await request(`/api/docs/${documentId}/several-people-config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ receivers, settings }),
+  });
+  return data;
 };
 
 export const fetchDocumentFile = async (documentId, download = false) => {
@@ -128,6 +139,20 @@ export const validateSignatureToken = async (token) => {
   return response.json();
 };
 
+export const emailSignatureLink = async (signatureId, email) => {
+  const data = await request(`/api/docs/signatures/${signatureId}/email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  return data;
+};
+
+export const fetchAuditTrail = async (documentId) => {
+  const data = await request(`/api/docs/${documentId}/audit`);
+  return data.logs || [];
+};
+
 export const signWithToken = async (token, payload = {}) => {
   const body = { token, ...payload };
 
@@ -138,7 +163,7 @@ export const signWithToken = async (token, payload = {}) => {
   });
 
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Unable to sign');
+  if (!response.ok) throw new Error(data.error || 'Unable to process signature');
   return data;
 };
 
