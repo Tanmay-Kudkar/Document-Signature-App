@@ -2,6 +2,8 @@ import { pool } from '../db.js';
 import jwt from 'jsonwebtoken';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { createSignature, getSignaturesByDocument, getSignatureById, updateSignatureStatus, deleteSignature, updateSignatureCoordinates } from '../models/signatureModel.js';
+import { logAudit, AUDIT_ACTIONS } from '../utils/audit.js';
+import { sendSignatureEmail } from '../utils/mailer.js';
 
 const getDocumentUrls = (req, documentId) => {
     const baseUrl = `${req.protocol}://${req.get('host')}`;
@@ -17,14 +19,16 @@ const mapDocument = (req, document) => {
         id: document.id,
         originalName: document.original_name,
         status: document.status,
+        signingMode: document.signing_mode || 'only_me',
         uploadDate: document.upload_date,
         fileSize: document.file_data ? document.file_data.length : (document.file_size || null),
+        receivers: document.receivers || [],
         ...getDocumentUrls(req, document.id),
     };
 };
 
 const findUserDocument = async (documentId, userId, includeData = false) => {
-    const cols = includeData ? '*' : 'id, original_name, upload_date, status, octet_length(file_data) as file_size';
+    const cols = includeData ? '*' : 'id, original_name, upload_date, status, signing_mode, octet_length(file_data) as file_size';
     const result = await pool.query(
         `SELECT ${cols}
          FROM documents
@@ -46,6 +50,7 @@ export const uploadDocument = async (req, res) => {
 
         // AUTH CHECK
         const userId = req.user?.userId;
+        const signingMode = req.body.signingMode || 'only_me';
 
         if (!userId) {
             // Free service / Sandbox mode - No document saved to DB
@@ -56,6 +61,7 @@ export const uploadDocument = async (req, res) => {
                     originalName,
                     fileSize: fileBuffer.length,
                     status: 'temporary',
+                    signingMode,
                     previewData: `data:application/pdf;base64,${base64Content}`
                 }
             });
@@ -63,11 +69,18 @@ export const uploadDocument = async (req, res) => {
 
         // Saved mode for registered users
         const result = await pool.query(
-            `INSERT INTO documents (user_id, file_data, original_name)
-             VALUES ($1, $2, $3)
-             RETURNING id, original_name, upload_date, status, octet_length(file_data) as file_size`,
-            [userId, fileBuffer, originalName]
+            `INSERT INTO documents (user_id, file_data, original_name, signing_mode)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, original_name, upload_date, status, signing_mode, octet_length(file_data) as file_size`,
+            [userId, fileBuffer, originalName, signingMode]
         );
+        
+        await logAudit({
+            documentId: result.rows[0].id,
+            actorId: userId,
+            action: AUDIT_ACTIONS.DOCUMENT_CREATED,
+            req
+        });
 
         res.status(201).json({
             message: 'Document uploaded and saved to database successfully',
@@ -83,15 +96,37 @@ export const getDocuments = async (req, res) => {
     try {
         const userId = req.user.userId;
         const result = await pool.query(
-            `SELECT id, original_name, upload_date, status, octet_length(file_data) as file_size
+            `SELECT id, original_name, upload_date, status, signing_mode, octet_length(file_data) as file_size
              FROM documents
              WHERE user_id = $1
              ORDER BY upload_date DESC`,
             [userId]
         );
 
+        const documents = result.rows;
+
+        // Fetch receivers for these documents
+        if (documents.length > 0) {
+            const docIds = documents.map(d => d.id);
+            const receiversResult = await pool.query(
+                `SELECT id, document_id, name, email, role, auth_format, display_order 
+                 FROM document_receivers 
+                 WHERE document_id = ANY($1) 
+                 ORDER BY display_order ASC`,
+                [docIds]
+            );
+            const receiversByDocId = {};
+            receiversResult.rows.forEach(r => {
+                if (!receiversByDocId[r.document_id]) receiversByDocId[r.document_id] = [];
+                receiversByDocId[r.document_id].push(r);
+            });
+            documents.forEach(d => {
+                d.receivers = receiversByDocId[d.id] || [];
+            });
+        }
+
         res.status(200).json({
-            documents: result.rows.map((document) => mapDocument(req, document)),
+            documents: documents.map((document) => mapDocument(req, document)),
         });
     } catch (error) {
         console.error('Error fetching documents:', error);
@@ -106,6 +141,16 @@ export const getDocumentById = async (req, res) => {
         if (!document) {
             return res.status(404).json({ error: 'Document not found' });
         }
+
+        // Fetch receivers
+        const receiversResult = await pool.query(
+            `SELECT id, document_id, name, email, role, auth_format, display_order 
+             FROM document_receivers 
+             WHERE document_id = $1 
+             ORDER BY display_order ASC`,
+            [document.id]
+        );
+        document.receivers = receiversResult.rows;
 
         res.status(200).json({ document: mapDocument(req, document) });
     } catch (error) {
@@ -394,8 +439,30 @@ export const validateSignatureToken = async (req, res) => {
         const signature = await getSignatureById(payload.signatureId);
         if (!signature) return res.status(404).json({ error: 'Signature not found' });
 
-        const docResult = await pool.query('SELECT id, original_name, status FROM documents WHERE id = $1', [signature.document_id]);
+        const docResult = await pool.query('SELECT id, original_name, status, file_data FROM documents WHERE id = $1', [signature.document_id]);
         if (docResult.rows.length === 0) return res.status(404).json({ error: 'Document not found' });
+
+        // Try to find the receiver name & email for auditing
+        let receiverName = 'Unknown Receiver';
+        let receiverEmail = 'Unknown Email';
+        try {
+            if (signature.metadata && signature.metadata.receiverId) {
+                const receiverResult = await pool.query('SELECT name, email FROM document_receivers WHERE id = $1', [signature.metadata.receiverId]);
+                if (receiverResult.rows.length > 0) {
+                    receiverName = receiverResult.rows[0].name;
+                    receiverEmail = receiverResult.rows[0].email;
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching receiver for audit:', err);
+        }
+
+        await logAudit({
+            documentId: signature.document_id,
+            action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
+            req,
+            metadata: { signatureId: signature.id, receiverName, receiverEmail }
+        });
 
         res.status(200).json({ signature, document: docResult.rows[0] });
     } catch (err) {
@@ -422,10 +489,26 @@ export const signWithToken = async (req, res) => {
             return res.status(401).json({ error: 'Invalid or expired token' });
         }
 
-        const { signerName = null, fieldType = 'signature', fieldText = '', fieldFont = 'Inter', signatureImage = null } = req.body || {};
+        const { signerName = null, fieldType = 'signature', fieldText = '', fieldFont = 'Inter', signatureImage = null, action = 'sign', reason = null } = req.body || {};
 
         const signature = await getSignatureById(payload.signatureId);
         if (!signature) return res.status(404).json({ error: 'Signature not found' });
+        
+        if (signature.status === 'signed' || signature.status === 'rejected') {
+            return res.status(400).json({ error: `Signature is already ${signature.status}` });
+        }
+        
+        if (action === 'reject') {
+            await updateSignatureStatus(signature.id, 'rejected');
+            await pool.query('UPDATE signatures SET metadata = jsonb_set(COALESCE(metadata, \'{}\'), \'{rejectReason}\', $1::jsonb) WHERE id = $2', [JSON.stringify(reason || 'No reason provided'), signature.id]);
+            await logAudit({
+                documentId: signature.document_id,
+                action: AUDIT_ACTIONS.DOCUMENT_REJECTED,
+                req,
+                metadata: { signatureId: signature.id, reason }
+            });
+            return res.status(200).json({ message: 'Signature rejected successfully' });
+        }
 
         const docResult = await pool.query('SELECT * FROM documents WHERE id = $1', [signature.document_id]);
         if (docResult.rows.length === 0) return res.status(404).json({ error: 'Document not found' });
@@ -606,10 +689,187 @@ export const signWithToken = async (req, res) => {
         // Update DB with modified file
         await pool.query('UPDATE documents SET file_data = $1, status = $2 WHERE id = $3', [Buffer.from(modifiedBytes), 'signed', document.id]);
         await updateSignatureStatus(signature.id, 'signed');
+        
+        // Try to find the receiver name & email for auditing
+        let receiverName = signerName || 'Unknown Receiver';
+        let receiverEmail = 'Unknown Email';
+        try {
+            if (signature.metadata && signature.metadata.receiverId) {
+                const receiverResult = await pool.query('SELECT name, email FROM document_receivers WHERE id = $1', [signature.metadata.receiverId]);
+                if (receiverResult.rows.length > 0) {
+                    receiverName = receiverResult.rows[0].name;
+                    receiverEmail = receiverResult.rows[0].email;
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching receiver for audit:', err);
+        }
+
+        await logAudit({
+            documentId: document.id,
+            action: AUDIT_ACTIONS.DOCUMENT_SIGNED,
+            req,
+            metadata: { signatureId: signature.id, receiverName, receiverEmail }
+        });
 
         res.status(200).json({ message: 'Document signed successfully' });
     } catch (err) {
         console.error('Error signing document:', err);
         res.status(500).json({ error: 'Internal server error', detail: err.message });
+    }
+};
+
+export const emailSignatureLink = async (req, res) => {
+    try {
+        const { signatureId } = req.params;
+        const { email } = req.body;
+        const userId = req.user.userId;
+
+        if (!email) return res.status(400).json({ error: 'Email is required' });
+
+        const signature = await getSignatureById(signatureId);
+        if (!signature) return res.status(404).json({ error: 'Signature not found' });
+
+        const docResult = await pool.query('SELECT original_name FROM documents WHERE id = $1 AND user_id = $2', [signature.document_id, userId]);
+        if (docResult.rows.length === 0) return res.status(404).json({ error: 'Document not found or access denied' });
+
+        const documentName = docResult.rows[0].original_name;
+
+        // Generate token
+        const token = jwt.sign({ signatureId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const link = `${frontendUrl}/sign?token=${encodeURIComponent(token)}`;
+
+        await sendSignatureEmail(email, documentName, link);
+
+        await logAudit({
+            documentId: signature.document_id,
+            actorId: userId,
+            action: AUDIT_ACTIONS.EMAIL_SENT,
+            req,
+            metadata: { signatureId, receiverEmail: email }
+        });
+
+        res.status(200).json({ message: 'Email sent successfully' });
+    } catch (err) {
+        console.error('Error emailing signature link:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+export const getAuditLogs = async (req, res) => {
+    try {
+        const { documentId } = req.params;
+        const userId = req.user.userId;
+
+        // Ensure user owns document
+        const docResult = await pool.query('SELECT id FROM documents WHERE id = $1 AND user_id = $2', [documentId, userId]);
+        if (docResult.rows.length === 0) return res.status(404).json({ error: 'Document not found or access denied' });
+
+        const result = await pool.query(
+            `SELECT a.id, a.action, a.ip_address, a.user_agent, a.metadata, a.created_at, a.country, a.city, a.device_type, u.name as actor_name, u.email as actor_email, d.original_name as document_name
+             FROM audit_logs a
+             LEFT JOIN users u ON a.actor_id = u.id
+             LEFT JOIN documents d ON a.document_id = d.id
+             WHERE a.document_id = $1
+             ORDER BY a.created_at DESC`,
+            [documentId]
+        );
+
+        res.status(200).json({ logs: result.rows });
+    } catch (err) {
+        console.error('Error fetching audit logs:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+export const saveSeveralPeopleConfig = async (req, res) => {
+    try {
+        const { documentId } = req.params;
+        const { receivers, settings } = req.body;
+        const userId = req.user ? req.user.userId : null;
+
+        // Verify document exists
+        const docResult = await pool.query('SELECT * FROM documents WHERE id = $1', [documentId]);
+        if (docResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Document not found' });
+        }
+
+        // Only owner or anon if no owner
+        const doc = docResult.rows[0];
+        if (doc.user_id && doc.user_id !== userId) {
+            return res.status(403).json({ error: 'Not authorized to modify this document' });
+        }
+
+        await pool.query('BEGIN');
+
+        // Update settings on document
+        await pool.query(`
+            UPDATE documents 
+            SET 
+                signing_mode = 'several_people',
+                signing_order_enabled = $1,
+                expiration_days = $2,
+                reminders_enabled = $3,
+                reminder_days = $4,
+                language = $5,
+                customize_email = $6,
+                uuid_enabled = $7,
+                verification_code_enabled = $8
+            WHERE id = $9
+        `, [
+            settings.orderReceivers || false,
+            settings.expirationDays || 15,
+            settings.reminders || false,
+            settings.reminderDays || 1,
+            settings.language || 'English',
+            settings.customizeEmail || false,
+            settings.uuid || false,
+            settings.verificationCode || false,
+            documentId
+        ]);
+
+        // Delete any existing receivers for this document (overwrite logic)
+        await pool.query('DELETE FROM document_receivers WHERE document_id = $1', [documentId]);
+
+        // Insert new receivers
+        for (let i = 0; i < receivers.length; i++) {
+            const r = receivers[i];
+            await pool.query(`
+                INSERT INTO document_receivers (
+                    document_id, name, email, role, 
+                    auth_password, auth_phone, auth_format, display_order
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            `, [
+                documentId,
+                r.name,
+                r.email,
+                r.role || 'Signer',
+                r.showPassword ? r.password : null,
+                r.showPhone ? r.phone : null,
+                r.showFormat ? r.format : null,
+                i
+            ]);
+        }
+
+        await pool.query('COMMIT');
+
+        // Log audit
+        await logAudit({
+            documentId: documentId,
+            actorId: userId,
+            action: AUDIT_ACTIONS.CONFIG_SAVED,
+            req,
+            metadata: {
+                receiversCount: receivers.length,
+                receivers: receivers.map(r => ({ name: r.name, email: r.email }))
+            }
+        });
+        
+        res.status(200).json({ message: 'Configuration saved successfully' });
+    } catch (error) {
+        await pool.query('ROLLBACK');
+        console.error('Error saving several people config:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 };
