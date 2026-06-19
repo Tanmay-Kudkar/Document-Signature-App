@@ -22,7 +22,7 @@ import {
   GripVertical, PenTool, X, BadgeCheck, ChevronLeft, ChevronRight, 
   ChevronDown, Download, Trash2, FileText, Upload, FileUp, Check,
   Share2, Mail, PlayCircle, Lock, User, Type, UploadCloud, Clock,
-  Eye, CheckCircle, XCircle, Settings, Globe
+  Eye, CheckCircle, XCircle, Settings, Globe, Users
 } from 'lucide-react';
 
 /* ==========================================================================
@@ -103,6 +103,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const pdfWrapperRef = useRef(null);
   const pageCanvasRef = useRef(null);
+  const touchStartRef = useRef(null);
   const token = localStorage.getItem('token');
 
   const [documents, setDocuments] = useState([]);
@@ -121,64 +122,6 @@ export default function Dashboard() {
   const [deletingId, setDeletingId] = useState(null);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
-
-  // ── Global Undo / Redo ──
-  const undoStackRef = useRef([]);
-  const redoStackRef = useRef([]);
-  const MAX_UNDO = 50;
-  const undoSyncTimerRef = useRef(null);
-
-  const pushUndo = (currentSigs) => {
-    undoStackRef.current.push(JSON.parse(JSON.stringify(currentSigs)));
-    if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
-    redoStackRef.current = []; // new action clears redo
-  };
-
-  const syncAfterUndoRedo = useCallback(async (restoredSigs) => {
-    // Debounced backend sync after undo/redo — update positions for all fields
-    if (!selectedDocumentId) return;
-    for (const sig of restoredSigs) {
-      try {
-        await updateSignatureCoords(selectedDocumentId, sig.id, {
-          pageNumber: sig.page_number ?? sig.pageNumber,
-          x: sig.x, y: sig.y, metadata: sig.metadata,
-        });
-      } catch {
-        // Field may have been deleted server-side; try re-creating it
-        try {
-          await createSignature(selectedDocumentId, {
-            pageNumber: sig.page_number ?? sig.pageNumber,
-            x: sig.x, y: sig.y, type: sig.type, metadata: sig.metadata,
-          });
-        } catch { /* best-effort */ }
-      }
-    }
-  }, [selectedDocumentId]);
-
-  const undo = useCallback(() => {
-    if (undoStackRef.current.length === 0) return;
-    setSignatures(current => {
-      redoStackRef.current.push(JSON.parse(JSON.stringify(current)));
-      const restored = undoStackRef.current.pop();
-      // Debounced backend sync
-      clearTimeout(undoSyncTimerRef.current);
-      undoSyncTimerRef.current = setTimeout(() => syncAfterUndoRedo(restored), 1200);
-      return restored;
-    });
-    showToast('↩ Undo');
-  }, [syncAfterUndoRedo]);
-
-  const redo = useCallback(() => {
-    if (redoStackRef.current.length === 0) return;
-    setSignatures(current => {
-      undoStackRef.current.push(JSON.parse(JSON.stringify(current)));
-      const restored = redoStackRef.current.pop();
-      clearTimeout(undoSyncTimerRef.current);
-      undoSyncTimerRef.current = setTimeout(() => syncAfterUndoRedo(restored), 1200);
-      return restored;
-    });
-    showToast('↪ Redo');
-  }, [syncAfterUndoRedo]);
 
   // ── Global Undo / Redo ──
   const undoStackRef = useRef([]);
@@ -262,6 +205,8 @@ export default function Dashboard() {
   const [draggingFieldId, setDraggingFieldId] = useState(null);
   const dragOffsetRef = useRef({ ox: 0, oy: 0 }); // pixel offset of grab point from field center
   const wasDraggingRef = useRef(false);
+  const dragStartPosRef = useRef({ x: 0, y: 0 });
+  const hasMovedRef = useRef(false);
   const [isSigning, setIsSigning] = useState(false);
   const [editingFieldId, setEditingFieldId] = useState(null);
   const [editText, setEditText] = useState('');
@@ -288,25 +233,6 @@ export default function Dashboard() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Mobile responsive: toggle right sidebar
-  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
-  const [showMobileDocsSidebar, setShowMobileDocsSidebar] = useState(false);
-  const [isMobileView, setIsMobileView] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1024);
-  const [isSmallScreen, setIsSmallScreen] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
-
-  useEffect(() => {
-    const handleResize = () => {
-      setIsMobileView(window.innerWidth < 1024);
-      setIsSmallScreen(window.innerWidth < 640);
-      // Auto-close mobile sidebars when resized to desktop
-      if (window.innerWidth >= 1024) {
-        setShowMobileSidebar(false);
-        setShowMobileDocsSidebar(false);
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   // Signature/Initials edit modal (ilovepdf style)
   const [sigEditModal, setSigEditModal] = useState(null); // { sig, tab: 'type'|'draw' }
@@ -539,7 +465,7 @@ export default function Dashboard() {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      if (!selectedDocumentId) { setSelectedDocument(null); return; }
+      if (!selectedDocumentId) { setSelectedDocument(null); setNumPages(0); setCurrentPage(1); return; }
       try {
         setIsLoadingDocument(true);
         // Don't blank the PDF — keep showing old content while new one loads
@@ -604,31 +530,12 @@ export default function Dashboard() {
   };
   const handleDragOver  = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setIsDragOver(true); };
   const handleDragLeave = (e) => { if (!pageCanvasRef.current?.contains(e.relatedTarget)) setIsDragOver(false); };
-  const handleDrop = async (e) => {
-    e.preventDefault();
-    setIsDragOver(false);
+  const placeFieldAt = async (type, x, y) => {
     if (!selectedDocumentId || !pageCanvasRef.current) return;
-    
-    const type = e.dataTransfer.getData('sigType');
-    if (!type) return;
-
     const rect = pageCanvasRef.current.getBoundingClientRect();
     const dSize = getDefaultFieldSize(type);
-    const wPct = (dSize.w / rect.width) * 100;
-    const hPct = (dSize.h / rect.height) * 100;
-
-    let minX = wPct / 2;
-    let maxX = 100 - wPct / 2;
-    if (minX > maxX) { minX = 50; maxX = 50; }
-    const x = Math.max(minX, Math.min(maxX, ((e.clientX - rect.left) / rect.width) * 100));
-
-    let minY = hPct / 2;
-    let maxY = 100 - hPct / 2;
-    if (minY > maxY) { minY = 50; maxY = 50; }
-    const y = Math.max(minY, Math.min(maxY, ((e.clientY - rect.top) / rect.height) * 100));
 
     let metadata = {};
-    // Use per-type custom color if set; sig/initials fall back to sigConfig.color; others default to theme color
     const isSigOrInitialsType = type === 'signature' || type === 'initials';
     const defColor = fieldDefinitions.find(d => d.type === type)?.color || '#1a1a1a';
     const fieldColor = fieldColors[type] || (isSigOrInitialsType ? (sigConfig.color || defColor) : defColor);
@@ -654,7 +561,17 @@ export default function Dashboard() {
       }
     }
 
-    const getReceiverText = (baseLabel) => receiverInfo ? `${receiverInfo.name}'s ${baseLabel}` : '';
+    const getReceiverText = (baseLabel) => {
+      if (!receiverInfo) return '';
+      const roleStr = receiverInfo.role || 'Signer';
+      if (roleStr === 'Validator' && baseLabel === 'Signature') {
+        return `${receiverInfo.name}'s Approval`;
+      }
+      if (roleStr === 'Witness' && baseLabel === 'Signature') {
+        return `${receiverInfo.name}'s Witness Signature`;
+      }
+      return `${receiverInfo.name}'s ${baseLabel}`;
+    };
 
     if (type === 'signature') {
       metadata = { ...initialSizeMeta, text: isOnlyMe ? sigConfig.name : getReceiverText('Signature'), font: isOnlyMe ? sigConfig.font : 'Inter', color: isOnlyMe ? (fieldColors['signature'] || sigConfig.color || defaultSigColor) : (rColor || defaultSigColor), drawingImage: isOnlyMe ? sigConfig.drawingImage : null };
@@ -667,34 +584,56 @@ export default function Dashboard() {
     } else if (type === 'text') {
       metadata = { ...initialSizeMeta, text: isOnlyMe ? 'Double click to edit' : getReceiverText('Text'), font: 'Inter', color: isOnlyMe ? fieldColor : (rColor || fieldColor) };
     } else if (type === 'stamp') {
-      // Show stamp config modal instead of placing immediately
       setStampCompanyName('');
       setStampImageB64(null);
       setStampModal({ pendingX: x, pendingY: y });
+      setShowMobileSidebar(false);
       return;
     }
 
     try {
+      const { createSignature } = await import('../lib/documents');
       const newSig = await createSignature(selectedDocumentId, { pageNumber: currentPage, x, y, type, metadata });
-      // Append the new field directly — do NOT call refreshSigs here.
-      // refreshSigs replaces the entire local state from the backend, which would
-      // discard any locally-applied customizations (color, font, etc.) on existing
-      // fields that haven't been fully flushed yet.
       if (newSig) {
-        pushUndo(signatures); // snapshot before adding new field
-        pushUndo(signatures); // snapshot before adding new field
+        pushUndo(signatures);
         setSignatures(prev => [...prev, newSig]);
       } else {
-        await refreshSigs(selectedDocumentId); // fallback if backend didn't return the sig
+        await refreshSigs(selectedDocumentId);
       }
+      setShowMobileSidebar(false);
     } catch (err) { showToast('⚠️ ' + (err.message || 'Unable to place field')); }
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (!selectedDocumentId || !pageCanvasRef.current) return;
+    
+    const type = e.dataTransfer.getData('sigType');
+    if (!type) return;
+
+    const rect = pageCanvasRef.current.getBoundingClientRect();
+    const dSize = getDefaultFieldSize(type);
+    const wPct = (dSize.w / rect.width) * 100;
+    const hPct = (dSize.h / rect.height) * 100;
+
+    let minX = wPct / 2;
+    let maxX = 100 - wPct / 2;
+    if (minX > maxX) { minX = 50; maxX = 50; }
+    const x = Math.max(minX, Math.min(maxX, ((e.clientX - rect.left) / rect.width) * 100));
+
+    let minY = hPct / 2;
+    let maxY = 100 - hPct / 2;
+    if (minY > maxY) { minY = 50; maxY = 50; }
+    const y = Math.max(minY, Math.min(maxY, ((e.clientY - rect.top) / rect.height) * 100));
+
+    await placeFieldAt(type, x, y);
   };
 
   /* ── move placed fields + resize ── */
   const handleFieldMouseDown = (e, sigId) => {
     e.stopPropagation();
     setSelectedFieldId(sigId);
-    pushUndo(signatures); // snapshot before move
     pushUndo(signatures); // snapshot before move
     // Capture where inside the field the user grabbed (offset from the field's center)
     if (pageCanvasRef.current) {
@@ -706,13 +645,14 @@ export default function Dashboard() {
         dragOffsetRef.current = { ox: e.clientX - centerX, oy: e.clientY - centerY };
       }
     }
+    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    hasMovedRef.current = false;
     setDraggingFieldId(sigId);
   };
 
   const handleResizeStart = (e, sig, dir) => {
     e.stopPropagation();
     e.preventDefault();
-    pushUndo(signatures); // snapshot before resize
     pushUndo(signatures); // snapshot before resize
     if (!pageCanvasRef.current) return;
     const { w, h } = getFieldSize(sig);
@@ -733,6 +673,8 @@ export default function Dashboard() {
     const meta = sig.metadata || {};
     const defaultPadX = sig.type === 'stamp' ? 8 : 6;
     const defaultPadY = sig.type === 'stamp' ? 6 : 4;
+    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    hasMovedRef.current = false;
     setResizingInfo({ 
       fieldId: sig.id, dir, anchorX, anchorY, currentH: h, currentW: w,
       padTop: meta.padTop !== undefined ? meta.padTop : defaultPadY,
@@ -743,6 +685,13 @@ export default function Dashboard() {
   };
 
   const handleGlobalMouseMove = (e) => {
+    if (resizingInfo || draggingFieldId) {
+      const dx = e.clientX - dragStartPosRef.current.x;
+      const dy = e.clientY - dragStartPosRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) > 3) {
+        hasMovedRef.current = true;
+      }
+    }
     if (resizingInfo && pageCanvasRef.current) {
       const rect = pageCanvasRef.current.getBoundingClientRect();
       const mx = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
@@ -850,11 +799,13 @@ export default function Dashboard() {
 
   const handleGlobalMouseUp = async (e) => {
     if (resizingInfo) {
-      wasDraggingRef.current = true;
-      setTimeout(() => { wasDraggingRef.current = false; }, 0);
+      if (hasMovedRef.current) {
+        wasDraggingRef.current = true;
+        setTimeout(() => { wasDraggingRef.current = false; }, 0);
+      }
       const field = signatures.find(s => s.id === resizingInfo.fieldId);
       setResizingInfo(null);
-      if (field && selectedDocumentId) {
+      if (field && selectedDocumentId && hasMovedRef.current) {
         try {
           await updateSignatureCoords(selectedDocumentId, field.id, {
             pageNumber: field.page_number ?? field.pageNumber,
@@ -862,20 +813,24 @@ export default function Dashboard() {
           });
         } catch { showToast('⚠️ Failed to save size'); }
       }
+      hasMovedRef.current = false;
       return;
     }
     if (draggingFieldId) {
-      wasDraggingRef.current = true;
-      setTimeout(() => { wasDraggingRef.current = false; }, 0);
+      if (hasMovedRef.current) {
+        wasDraggingRef.current = true;
+        setTimeout(() => { wasDraggingRef.current = false; }, 0);
+      }
       const sigToUpdate = signatures.find(s => s.id === draggingFieldId);
       setDraggingFieldId(null);
-      if (sigToUpdate && selectedDocumentId) {
+      if (sigToUpdate && selectedDocumentId && hasMovedRef.current) {
         try {
           await updateSignatureCoords(selectedDocumentId, draggingFieldId, { pageNumber: sigToUpdate.pageNumber || sigToUpdate.page_number, x: sigToUpdate.x, y: sigToUpdate.y });
         } catch (err) {
           showToast('⚠️ Failed to save field position');
         }
       }
+      hasMovedRef.current = false;
     }
   };
 
@@ -886,11 +841,10 @@ export default function Dashboard() {
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
-  }, [draggingFieldId, resizingInfo, signatures]);
+  }, [draggingFieldId, resizingInfo, signatures, selectedDocumentId]);
 
   /* ── signature actions ── */
   const handleDeleteSig = async (sig) => {
-    pushUndo(signatures); // snapshot before delete
     pushUndo(signatures); // snapshot before delete
     setDeletingId(sig.id);
     try { await deleteSignature(selectedDocumentId, sig.id); await refreshSigs(selectedDocumentId); showToast('Field removed.'); }
@@ -916,19 +870,6 @@ export default function Dashboard() {
       }
 
 
-      // Ctrl+Z → Undo
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-        return;
-      }
-      // Ctrl+Shift+Z or Ctrl+Y → Redo
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey) || (e.key === 'Z' && e.shiftKey))) {
-        e.preventDefault();
-        redo();
-        return;
-      }
-
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFieldId && !editingFieldId) {
         const sigToDelete = signatures.find(s => s.id === selectedFieldId);
         if (sigToDelete) {
@@ -941,8 +882,7 @@ export default function Dashboard() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedFieldId, editingFieldId, signatures, selectedDocumentId, undo, redo]);
-  }, [selectedFieldId, editingFieldId, signatures, selectedDocumentId, undo, redo]);
-
+  
   const handleShare = async (sig) => {
     try {
       const t = await generateSignatureToken(sig.id);
@@ -976,7 +916,6 @@ export default function Dashboard() {
     if (sig) {
       // Editing existing placed stamp
       pushUndo(signatures); // snapshot before stamp edit
-      pushUndo(signatures); // snapshot before stamp edit
       setSignatures(sigs => sigs.map(s =>
         s.id === sig.id ? { ...s, metadata } : s
       ));
@@ -994,7 +933,6 @@ export default function Dashboard() {
           type: 'stamp', metadata,
         });
         if (newSig) {
-          pushUndo(signatures); // snapshot before adding stamp
           pushUndo(signatures); // snapshot before adding stamp
           setSignatures(prev => [...prev, newSig]);
         } else {
@@ -1054,7 +992,6 @@ export default function Dashboard() {
       ...(drawingDataUrl ? { drawingImage: drawingDataUrl } : {}),
     };
     pushUndo(signatures); // snapshot before sig/initials edit
-    pushUndo(signatures); // snapshot before sig/initials edit
     setSignatures(sigs => sigs.map(s => s.id === sig.id ? { ...s, metadata: newMeta } : s));
     setSigEditModal(null);
     try {
@@ -1107,7 +1044,6 @@ export default function Dashboard() {
     if (!newText) return;
     // Optimistically update local state
     pushUndo(signatures); // snapshot before text edit
-    pushUndo(signatures); // snapshot before text edit
     setSignatures(sigs => sigs.map(s =>
       s.id === sig.id ? { ...s, metadata: { ...(s.metadata || {}), text: newText } } : s
     ));
@@ -1145,12 +1081,10 @@ export default function Dashboard() {
         const padBottom = meta.padBottom !== undefined ? meta.padBottom : defaultPadY;
         const padLeft = meta.padLeft !== undefined ? meta.padLeft : defaultPadX;
         const padRight = meta.padRight !== undefined ? meta.padRight : defaultPadX;
-        const border = 2;
-        const headerH = 16;
-        const actualPadL = padLeft + border;
-        const actualPadR = padRight + border;
-        const actualPadT = padTop + border + headerH;
-        const actualPadB = padBottom + border;
+        const actualPadL = padLeft;
+        const actualPadR = padRight;
+        const actualPadT = padTop;
+        const actualPadB = padBottom;
 
         const drawImageToCanvas = async (src, padL = 0, padT = 0, padR = 0, padB = 0) => {
           const canvas = document.createElement('canvas');
@@ -1339,14 +1273,9 @@ export default function Dashboard() {
     return true;
   });
 
-  const displayedDocuments = documents.filter(doc => {
-    if (statusFilter === 'all') return true;
-    if (statusFilter === 'signed') return doc.status === 'signed';
-    if (statusFilter === 'pending') return doc.status !== 'signed';
-    return true;
-  });
+  
 
-  /* ════════════════════════════════════════════════════════ RENDER ═══ */
+  /* ═══════ RENDER ═══ */
   return (
     <div style={{ height: 'calc(100vh - 56px)', display: 'flex', flexDirection: 'column', background: '#f0f1f5', overflow: 'hidden' }}>
 
@@ -1361,8 +1290,7 @@ export default function Dashboard() {
       {selectedDocument && (
         <div className="shrink-0 flex flex-wrap items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 border-b border-gray-200 bg-white min-h-[48px] h-auto">
           <div className="flex items-center bg-gray-100 rounded shrink-0" style={{ height: 30 }}>
-        <div className="shrink-0 flex flex-wrap items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 border-b border-gray-200 bg-white min-h-[48px] h-auto">
-          <div className="flex items-center bg-gray-100 rounded shrink-0" style={{ height: 30 }}>
+
             <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage <= 1}
               className="px-2 h-full flex items-center text-gray-600 hover:bg-gray-200 disabled:opacity-30 rounded-l transition">
               <ChevronLeft className="w-3.5 h-3.5" />
@@ -1373,18 +1301,14 @@ export default function Dashboard() {
             </button>
           </div>
           <div className="flex items-center gap-1 text-sm text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white shrink-0">
-          <div className="flex items-center gap-1 text-sm text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white shrink-0">
             <span className="font-bold">{currentPage}</span><span className="text-gray-400">/</span><span>{numPages || 1}</span>
           </div>
-          <div className="relative flex items-center shrink-0">
           <div className="relative flex items-center shrink-0">
             <select
               value={selectedDocumentId || ''}
               onChange={(e) => setSelectedDocumentId(e.target.value)}
               className="appearance-none bg-white border border-gray-200 rounded px-3 py-1 pr-8 text-sm font-medium text-gray-700 outline-none hover:bg-gray-50 transition cursor-pointer max-w-[180px] sm:max-w-[250px] truncate"
-              className="appearance-none bg-white border border-gray-200 rounded px-3 py-1 pr-8 text-sm font-medium text-gray-700 outline-none hover:bg-gray-50 transition cursor-pointer max-w-[180px] sm:max-w-[250px] truncate"
             >
-              {displayedDocuments.map(doc => (
               {displayedDocuments.map(doc => (
                 <option key={doc.id} value={doc.id}>{doc.originalName}</option>
               ))}
@@ -1393,25 +1317,20 @@ export default function Dashboard() {
           </div>
           <div className="flex-1" />
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {isSigned && (
               <button onClick={() => handleDownload(true)} disabled={isOpeningFile}
                 className="flex items-center gap-1.5 text-xs font-bold text-white px-2 sm:px-3 py-1.5 rounded-lg transition hover:opacity-90"
-                className="flex items-center gap-1.5 text-xs font-bold text-white px-2 sm:px-3 py-1.5 rounded-lg transition hover:opacity-90"
                 style={{ background: '#22c55e' }}>
                 <Download className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Download Signed</span>
                 <span className="hidden sm:inline">Download Signed</span>
               </button>
             )}
             <NeonSweepButton onClick={() => handleDownload(false)}
               tone="slate" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
-              tone="slate" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
               Open
             </NeonSweepButton>
             {token && (
               <NeonSweepButton onClick={handleDelete}
-                tone="danger" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
                 tone="danger" size="sm" className="px-3 sm:px-4 text-xs font-semibold">
                 Delete
               </NeonSweepButton>
@@ -1425,13 +1344,28 @@ export default function Dashboard() {
 
         {/* Mobile Documents Overlay Backdrop */}
         {isMobileView && showMobileDocsSidebar && (
-          <div className="fixed inset-0 bg-black/40 z-[85] animate-fade-in" onClick={() => setShowMobileDocsSidebar(false)} />
+          <div
+            className="fixed inset-0 bg-black/40 z-[85] animate-fade-in"
+            onTouchStart={(e) => {
+              touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }}
+            onTouchEnd={(e) => {
+              if (touchStartRef.current) {
+                const dx = Math.abs(e.changedTouches[0].clientX - touchStartRef.current.x);
+                const dy = Math.abs(e.changedTouches[0].clientY - touchStartRef.current.y);
+                if (dx > 10 || dy > 10) return;
+              }
+              e.preventDefault();
+              setShowMobileDocsSidebar(false);
+            }}
+            onClick={() => setShowMobileDocsSidebar(false)}
+          />
         )}
 
         {/* ── LEFT: thumbnail strip ── */}
         <aside className={`shrink-0 bg-white lg:border-r border-gray-200 flex flex-col overflow-y-auto custom-scrollbar
           fixed lg:static inset-x-0 bottom-0 lg:inset-auto lg:left-0 z-[90] w-full lg:w-[160px]
-          transition-transform duration-300 ease-out shadow-[0_-10px_40px_rgba(0,0,0,0.1)] lg:shadow-none
+          transform transition-transform duration-300 ease-out shadow-[0_-10px_40px_rgba(0,0,0,0.1)] lg:shadow-none
           rounded-t-3xl lg:rounded-none
           ${isMobileView ? (showMobileDocsSidebar ? 'translate-y-0' : 'translate-y-full') : 'translate-x-0'}
         `} style={{ maxHeight: isMobileView ? '85vh' : undefined }}>
@@ -1471,28 +1405,11 @@ export default function Dashboard() {
                     </div>
                   )}
                   <div className="flex items-center justify-between px-2 pb-2 mb-1 border-b border-gray-100 shrink-0">
-                <div className="p-2 border-b border-gray-100 flex flex-col gap-1 items-stretch shrink-0">
-                  {!isOnlyMe && documents.length > 0 && (
-                    <div className="px-2 pb-2 mb-1 border-b border-gray-100 flex flex-col gap-2 shrink-0">
-                      <select 
-                        value={statusFilter}
-                        onChange={e => setStatusFilter(e.target.value)}
-                        className="bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-[11px] font-bold text-gray-600 outline-none hover:bg-gray-100 transition cursor-pointer w-full focus:ring-1 focus:ring-gray-200"
-                      >
-                        <option value="all">All Statuses</option>
-                        <option value="pending">⏳ Pending</option>
-                        <option value="signed">✅ Signed</option>
-                      </select>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between px-2 pb-2 mb-1 border-b border-gray-100 shrink-0">
                     <label className="flex items-center gap-2 cursor-pointer group">
                       <input 
                         type="checkbox" 
                         checked={displayedDocuments.length > 0 && checkedDocumentIds.length === displayedDocuments.length}
-                        checked={displayedDocuments.length > 0 && checkedDocumentIds.length === displayedDocuments.length}
                         onChange={(e) => {
-                          if (e.target.checked) setCheckedDocumentIds(displayedDocuments.map(d => d.id));
                           if (e.target.checked) setCheckedDocumentIds(displayedDocuments.map(d => d.id));
                           else setCheckedDocumentIds([]);
                         }}
@@ -1504,17 +1421,14 @@ export default function Dashboard() {
 
                   {checkedDocumentIds.length > 0 && (
                     <button onClick={() => setShowBulkDeleteModal(true)} className="shrink-0 w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
-                    <button onClick={() => setShowBulkDeleteModal(true)} className="shrink-0 w-full mb-1 bg-red-50 text-red-600 text-[10px] font-bold py-2 rounded-lg flex items-center justify-center gap-1.5 hover:bg-red-100 border border-red-200 transition-all hover:shadow-sm active:scale-95">
                       <Trash2 className="w-3.5 h-3.5" />
                       Delete Selected ({checkedDocumentIds.length})
                     </button>
                   )}
                   {displayedDocuments.map(doc => {
-                  {displayedDocuments.map(doc => {
                     const isSel = doc.id === selectedDocumentId;
                     const isChecked = checkedDocumentIds.includes(doc.id);
                     return (
-                      <div key={doc.id} className={`flex items-center w-full shrink-0 rounded-xl transition-all border ${isSel ? 'bg-red-50 border-[#e8222c]/40 shadow-sm' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
                       <div key={doc.id} className={`flex items-center w-full shrink-0 rounded-xl transition-all border ${isSel ? 'bg-red-50 border-[#e8222c]/40 shadow-sm' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
                         <label className="pl-3 py-2 flex items-center justify-center cursor-pointer mb-0">
                           <input 
@@ -1524,7 +1438,7 @@ export default function Dashboard() {
                             className="w-3.5 h-3.5 text-[#e8222c] bg-white border-gray-300 rounded focus:ring-[#e8222c] cursor-pointer accent-[#e8222c]"
                           />
                         </label>
-                        <button onClick={() => setSelectedDocumentId(doc.id)}
+                        <button onClick={() => { setSelectedDocumentId(doc.id); if (isMobileView) setShowMobileDocsSidebar(false); }}
                           className="flex-1 text-left p-2.5 text-xs flex flex-col overflow-hidden group">
                           <div className="flex items-center gap-2">
                             <FileText className={`w-4 h-4 shrink-0 transition-colors ${isSel ? 'text-[#e8222c]' : 'text-[#9ca3af] group-hover:text-gray-500'}`} />
@@ -1544,8 +1458,7 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {numPages > 0 && (
-                <div className="flex flex-row lg:flex-col overflow-x-auto lg:overflow-visible items-center gap-3 p-3 shrink-0 custom-scrollbar">
+              {numPages > 0 && !isMobileView && (
                 <div className="flex flex-row lg:flex-col overflow-x-auto lg:overflow-visible items-center gap-3 p-3 shrink-0 custom-scrollbar">
                   {Array.from({ length: numPages }, (_, i) => i + 1).map(pg => (
                     <button key={pg} onClick={() => setCurrentPage(pg)} className="flex flex-col items-center gap-1 group transition">
@@ -1575,7 +1488,6 @@ export default function Dashboard() {
         {/* ── CENTER: PDF canvas ── */}
         <main ref={pdfWrapperRef}
           className="flex-1 overflow-auto custom-scrollbar flex justify-center items-start"
-          style={{ background: '#f0f1f5', padding: isSmallScreen ? 12 : 32, userSelect: 'none', WebkitUserSelect: 'none' }}
           style={{ background: '#f0f1f5', padding: isSmallScreen ? 12 : 32, userSelect: 'none', WebkitUserSelect: 'none' }}
           onClick={() => { if (wasDraggingRef.current) return; setSelectedFieldId(null); setEditingFieldId(null); }}>
           {!selectedDocument && !isLoadingDocument ? (
@@ -1623,6 +1535,16 @@ export default function Dashboard() {
                 const def = fieldDefinitions.find(d => d.type === sig.type) || fieldDefinitions[0];
                 const meta = sig.metadata || {};
                 const activeColor = (!isOnlyMe && meta.receiverId) ? meta.color : def.color;
+                
+                // Get receiver details to determine custom labels based on role
+                const receiverInfo = selectedDocument?.receivers?.find(r => r.id === meta.receiverId);
+                const roleStr = receiverInfo?.role || 'Signer';
+                let labelText = def.label;
+                if (!isOnlyMe && roleStr === 'Validator' && sig.type === 'signature') {
+                  labelText = 'Validator Approval';
+                } else if (!isOnlyMe && roleStr === 'Witness' && sig.type === 'signature') {
+                  labelText = 'Witness Signature';
+                }
                 const isSelected = selectedFieldId === sig.id;
                 const isEditing = editingFieldId === sig.id;
                 const isEditable = sig.type !== 'signature' && sig.type !== 'date' && sig.type !== 'stamp';
@@ -1707,7 +1629,7 @@ export default function Dashboard() {
                       whiteSpace: 'nowrap',
                       fontStyle: isCursive ? 'italic' : 'normal',
                     }}>
-                      {meta.text || def.label}
+                      {meta.text || labelText}
                     </span>
                   );
                 };
@@ -1728,10 +1650,7 @@ export default function Dashboard() {
                         style={{ background: '#22c55e', border: '2px solid white' }}
                         title="Signed">
                         <Check className="w-3 h-3 text-white" strokeWidth={3} />
-                      <div className="absolute -top-3 -right-3 flex items-center justify-center rounded-full w-5 h-5 shadow-sm"
-                        style={{ background: '#22c55e', border: '2px solid white' }}
-                        title="Signed">
-                        <Check className="w-3 h-3 text-white" strokeWidth={3} />
+
                       </div>
                     ) : isSelected ? (
                       /* ── SELECTED: full card with header + resize handles ── */
@@ -1795,7 +1714,7 @@ export default function Dashboard() {
                           <div className="shrink-0 flex items-center gap-1 px-1.5 border-b" style={{ height: 16, borderColor: `${activeColor}33`, background: `${activeColor}22` }}>
                             <DragHandle />
                             {getFieldIcon(def.type, activeColor, 11)}
-                            <span className="font-bold truncate" style={{ color: activeColor, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{def.label}</span>
+                            <span className="font-bold truncate" style={{ color: activeColor, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{labelText}</span>
                           </div>
                           {/* Content — text scales with height, always centered */}
                           <div className="flex-1 overflow-hidden flex items-center justify-center"
@@ -1853,7 +1772,11 @@ export default function Dashboard() {
           <button
             className="lg:hidden fixed bottom-6 right-6 z-[60] flex items-center gap-2 bg-[#e8222c] text-white font-bold px-4 py-3 rounded-2xl shadow-xl hover:opacity-90 active:scale-95 transition-all"
             style={{ boxShadow: '0 8px 30px rgba(232,34,44,0.35)' }}
-            onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+            onClick={() => {
+              if (wasDraggingRef.current) return;
+              setShowMobileSidebar(!showMobileSidebar);
+              setShowMobileDocsSidebar(false);
+            }}
           >
             <PenTool className="w-5 h-5" />
             <span className="text-sm">Fields</span>
@@ -1867,6 +1790,18 @@ export default function Dashboard() {
         {showMobileSidebar && (
           <div
             className="lg:hidden fixed inset-0 z-[70] bg-black/30"
+            onTouchStart={(e) => {
+              touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }}
+            onTouchEnd={(e) => {
+              if (touchStartRef.current) {
+                const dx = Math.abs(e.changedTouches[0].clientX - touchStartRef.current.x);
+                const dy = Math.abs(e.changedTouches[0].clientY - touchStartRef.current.y);
+                if (dx > 10 || dy > 10) return;
+              }
+              e.preventDefault();
+              setShowMobileSidebar(false);
+            }}
             onClick={() => setShowMobileSidebar(false)}
           />
         )}
@@ -1875,28 +1810,13 @@ export default function Dashboard() {
         <aside
           className={`shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden
             fixed lg:static inset-y-0 right-0 z-[80] w-[85vw] sm:w-[340px] lg:w-[320px]
-            transition-transform duration-300 ease-out
-            ${showMobileSidebar ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
-          `}
-          style={{ top: 0, boxShadow: showMobileSidebar ? '-8px 0 40px rgba(0,0,0,0.15)' : 'none' }}
-        >
-          <div className="shrink-0 flex items-center justify-between px-4 sm:px-6 border-b border-gray-100" style={{ height: 56 }}>
-        <aside
-          className={`shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden
-            fixed lg:static inset-y-0 right-0 z-[80] w-[85vw] sm:w-[340px] lg:w-[320px]
-            transition-transform duration-300 ease-out
+            transform transition-transform duration-300 ease-out
             ${showMobileSidebar ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
           `}
           style={{ top: 0, boxShadow: showMobileSidebar ? '-8px 0 40px rgba(0,0,0,0.15)' : 'none' }}
         >
           <div className="shrink-0 flex items-center justify-between px-4 sm:px-6 border-b border-gray-100" style={{ height: 56 }}>
             <h2 className="font-bold text-gray-900" style={{ fontSize: 20 }}>Signing options</h2>
-            <button
-              className="lg:hidden p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
-              onClick={() => setShowMobileSidebar(false)}
-            >
-              <X className="w-5 h-5" />
-            </button>
             <button
               className="lg:hidden p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
               onClick={() => setShowMobileSidebar(false)}
@@ -1922,7 +1842,7 @@ export default function Dashboard() {
                           const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
                           const color = colors[idx % colors.length];
                           return (
-                            <option key={r.id} value={r.id}>{r.name} ({r.email})</option>
+                            <option key={r.id} value={r.id}>{r.name} [{r.role || 'Signer'}] ({r.email})</option>
                           );
                         })}
                       </select>
@@ -1972,6 +1892,11 @@ export default function Dashboard() {
                       : (customColor || (isSigType ? (isOnlyMe ? sigConfig.color : f.color) : f.color));
                     return (
                       <div key={f.type} draggable onDragStart={e => handleDragStart(e, f.type)}
+                        onClick={() => {
+                          if (isMobileView) {
+                            placeFieldAt(f.type, 50, 50);
+                          }
+                        }}
                         onDoubleClick={e => !isStamp && openColorPicker(e, f.type)}
                         className="flex flex-row items-center justify-between rounded-xl cursor-grab active:cursor-grabbing hover:shadow-md hover:-translate-y-0.5 transition-all select-none bg-white"
                         style={{
@@ -2365,7 +2290,7 @@ export default function Dashboard() {
               </div>
 
               {/* ── Tab content area ── */}
-              <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 320 }}>
+              <div className="flex flex-1 overflow-hidden" style={{ minHeight: 180, maxHeight: 280 }}>
                 
                 {/* Left icon strip (Type/Draw/Upload sub-tabs) */}
                 {!isStamp && (
@@ -2494,19 +2419,6 @@ export default function Dashboard() {
                     <button key={p.color} onClick={() => setSigEditColor(p.color)} className="w-7 h-7 rounded-full border-2 transition"
                       style={{ background: p.color, borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent', boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none' }} title={p.label} />
                   ))}
-                  {/* Custom color picker */}
-                  <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center shrink-0 transition"
-                    style={{
-                      background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                      borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
-                      boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
-                    }}
-                    title="Custom color">
-                    <input type="color" value={sigEditColor}
-                      onChange={e => setSigEditColor(e.target.value)}
-                      className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-                    />
-                  </label>
                   {/* Custom color picker */}
                   <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center shrink-0 transition"
                     style={{
@@ -2658,6 +2570,18 @@ export default function Dashboard() {
                               dotColor: 'bg-emerald-500 ring-4 ring-emerald-50',
                               icon: <CheckCircle className="w-4 h-4 text-white" />
                             };
+                          case 'DOCUMENT_VALIDATED':
+                            return {
+                              label: 'Document Approved/Validated',
+                              dotColor: 'bg-teal-500 ring-4 ring-teal-50',
+                              icon: <BadgeCheck className="w-4 h-4 text-white" />
+                            };
+                          case 'DOCUMENT_WITNESSED':
+                            return {
+                              label: 'Signature Witnessed',
+                              dotColor: 'bg-sky-500 ring-4 ring-sky-50',
+                              icon: <Users className="w-4 h-4 text-white" />
+                            };
                           case 'DOCUMENT_REJECTED':
                           case 'Signature Rejected':
                             return {
@@ -2714,11 +2638,16 @@ export default function Dashboard() {
                       })();
 
                       const actorText = (() => {
-                        if (log.actor_name) return `${log.actor_name} (${log.actor_email})`;
-                        if (log.metadata?.receiverName || log.metadata?.receiverEmail) {
-                          return `${log.metadata.receiverName || 'Unknown Receiver'} (${log.metadata.receiverEmail || 'No Email'})`;
+                        let base = 'System / Link Recipient';
+                        if (log.actor_name) {
+                          base = `${log.actor_name} (${log.actor_email})`;
+                        } else if (log.metadata?.receiverName || log.metadata?.receiverEmail) {
+                          base = `${log.metadata.receiverName || 'Unknown Receiver'} (${log.metadata.receiverEmail || 'No Email'})`;
                         }
-                        return 'System / Link Recipient';
+                        if (log.metadata?.role) {
+                          base += ` [${log.metadata.role}]`;
+                        }
+                        return base;
                       })();
 
                       const locationText = log.city && log.country ? `${log.city}, ${log.country}` : log.country || null;
@@ -2842,7 +2771,11 @@ export default function Dashboard() {
 
       {/* Mobile Floating Documents Button */}
       {isMobileView && !showMobileDocsSidebar && !showMobileSidebar && (
-        <button onClick={() => setShowMobileDocsSidebar(true)}
+        <button onClick={() => {
+          if (wasDraggingRef.current) return;
+          setShowMobileDocsSidebar(true);
+          setShowMobileSidebar(false);
+        }}
           className="fixed bottom-6 left-6 z-[45] bg-[#e8222c] text-white flex items-center justify-center gap-2 px-4 py-3 rounded-full shadow-xl hover:bg-red-700 transition-colors animate-fade-in">
           <FileText className="w-5 h-5" />
           <span className="font-bold text-sm">Documents</span>

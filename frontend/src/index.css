@@ -54,6 +54,11 @@ html, body {
   padding: 0;
   width: 100%;
   overflow-x: hidden;
+  caret-color: transparent;
+}
+
+input, textarea, [contenteditable] {
+  caret-color: auto;
 }
 
 /* Hide scrollbar globally */

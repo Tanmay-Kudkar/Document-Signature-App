@@ -46,9 +46,12 @@ export default function Sign() {
   const [error, setError]           = useState('');
   const [signature, setSignature]   = useState(null);
   const [docData, setDocData]       = useState(null);
+  const [receiver, setReceiver]     = useState(null);
+  const role = receiver?.role || 'Signer';
 
   /* PDF viewer */
   const pdfWrapperRef = useRef(null);
+  const pageCanvasRef = useRef(null);
   const [pageWidth, setPageWidth]   = useState(640);
   const [numPages, setNumPages]     = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -57,6 +60,10 @@ export default function Sign() {
   const [signing, setSigning]       = useState(false);
   const [rejecting, setRejecting]   = useState(false);
   const [signSuccess, setSignSuccess] = useState(false);
+
+  /* Reject modal */
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectReason, setRejectReason]       = useState('');
 
   /* Signature details modal */
   const [showModal, setShowModal]   = useState(false);
@@ -73,6 +80,9 @@ export default function Sign() {
   const [resizingInfo, setResizingInfo] = useState(null);
   const dragOffsetRef = useRef({ ox: 0, oy: 0 });
   const wasDraggingRef = useRef(false);
+  const dragStartPosRef = useRef({ x: 0, y: 0 });
+  const hasMovedRef = useRef(false);
+  const touchStartRef = useRef(null);
   const [isDraggingField, setIsDraggingField] = useState(false);
   const [isSelected, setIsSelected] = useState(true);
 
@@ -147,6 +157,9 @@ export default function Sign() {
         const data = await validateTokenApi(token);
         setSignature(data.signature);
         setDocData(data.document);
+        if (data.receiver) {
+          setReceiver(data.receiver);
+        }
         
         const fType = data.signature.type || 'signature';
         const fieldDefs = {
@@ -187,10 +200,10 @@ export default function Sign() {
   /* ── Resize logic ── */
   const handleResizeStart = (e, sig, dir) => {
     e.stopPropagation(); e.preventDefault();
-    if (!pdfWrapperRef.current) return;
+    if (!pageCanvasRef.current) return;
     const w = sig.metadata?.w || 200;
     const h = sig.metadata?.h || 50;
-    const rect = pdfWrapperRef.current.getBoundingClientRect();
+    const rect = pageCanvasRef.current.getBoundingClientRect();
     const cx = (sig.x / 100) * rect.width;
     const cy = (sig.y / 100) * rect.height;
     
@@ -207,6 +220,8 @@ export default function Sign() {
     const meta = sig.metadata || {};
     const defaultPadX = sig.type === 'stamp' ? 8 : 6;
     const defaultPadY = sig.type === 'stamp' ? 6 : 4;
+    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    hasMovedRef.current = false;
     setResizingInfo({ 
       fieldId: sig.id, dir, anchorX, anchorY, currentH: h, currentW: w,
       padTop: meta.padTop !== undefined ? meta.padTop : defaultPadY,
@@ -217,8 +232,15 @@ export default function Sign() {
   };
 
   const handleGlobalMouseMove = (e) => {
-    if (resizingInfo && pdfWrapperRef.current) {
-      const rect = pdfWrapperRef.current.getBoundingClientRect();
+    if (resizingInfo || isDraggingField) {
+      const dx = e.clientX - dragStartPosRef.current.x;
+      const dy = e.clientY - dragStartPosRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) > 3) {
+        hasMovedRef.current = true;
+      }
+    }
+    if (resizingInfo && pageCanvasRef.current) {
+      const rect = pageCanvasRef.current.getBoundingClientRect();
       const mx = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
       const my = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
       const { dir, anchorX, anchorY } = resizingInfo;
@@ -264,8 +286,8 @@ export default function Sign() {
         ...s, x: newX, y: newY, 
         metadata: { ...(s.metadata || {}), w: Math.round(newW), h: Math.round(newH), padTop, padBottom, padLeft, padRight }
       }));
-    } else if (isDraggingField && pdfWrapperRef.current && signature) {
-      const rect = pdfWrapperRef.current.getBoundingClientRect();
+    } else if (isDraggingField && pageCanvasRef.current && signature) {
+      const rect = pageCanvasRef.current.getBoundingClientRect();
       const meta = signature.metadata || {};
       const w = meta.w || 200;
       const h = meta.h || 50;
@@ -289,20 +311,25 @@ export default function Sign() {
 
   const handleFieldMouseDown = (e) => {
     e.stopPropagation();
-    if (!pdfWrapperRef.current || !signature) return;
-    const rect = pdfWrapperRef.current.getBoundingClientRect();
+    if (!pageCanvasRef.current || !signature) return;
+    const rect = pageCanvasRef.current.getBoundingClientRect();
     const centerX = (signature.x / 100) * rect.width + rect.left;
     const centerY = (signature.y / 100) * rect.height + rect.top;
     dragOffsetRef.current = { ox: e.clientX - centerX, oy: e.clientY - centerY };
+    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    hasMovedRef.current = false;
     setIsDraggingField(true);
   };
 
   const handleGlobalMouseUp = (e) => {
     if (resizingInfo || isDraggingField) {
-      wasDraggingRef.current = true;
-      setTimeout(() => { wasDraggingRef.current = false; }, 0);
+      if (hasMovedRef.current) {
+        wasDraggingRef.current = true;
+        setTimeout(() => { wasDraggingRef.current = false; }, 0);
+      }
       setResizingInfo(null);
       setIsDraggingField(false);
+      hasMovedRef.current = false;
     }
   };
 
@@ -321,29 +348,58 @@ export default function Sign() {
     try {
       setSigning(true);
       
-      let finalSignatureImage = capturedImage;
+      // For stamp: always re-render capturedImage onto a field-sized canvas so
+      // the PDF backend receives a correctly-scaled image (not the raw upload).
+      let finalSignatureImage = null;
       const meta = signature.metadata || {};
-      
+
+      const getFieldSize = (sig) => ({
+        w: sig.metadata?.w || (sig.type === 'stamp' ? 120 : 140),
+        h: sig.metadata?.h || (sig.type === 'stamp' ? 120 : 50),
+      });
+      const { w, h } = getFieldSize(signature);
+      const scale = 3;
+
+      if (signature.type === 'stamp' && capturedImage) {
+        // Render the stamp image inside the field bounds before submitting
+        const canvas = document.createElement('canvas');
+        canvas.width = w * scale;
+        canvas.height = h * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+        const img = new Image();
+        img.src = capturedImage;
+        await new Promise(r => { img.onload = r; img.onerror = r; });
+        const defaultPadX = 8, defaultPadY = 6;
+        const padL = meta.padLeft  !== undefined ? meta.padLeft  : defaultPadX;
+        const padR = meta.padRight !== undefined ? meta.padRight : defaultPadX;
+        const padT = meta.padTop   !== undefined ? meta.padTop   : defaultPadY;
+        const padB = meta.padBottom !== undefined ? meta.padBottom : defaultPadY;
+        const availW = Math.max(1, w - padL - padR);
+        const availH = Math.max(1, h - padT - padB);
+        if (img.width && img.height) {
+          const imgScale = Math.min(availW / img.width, availH / img.height);
+          const drawW = img.width  * imgScale;
+          const drawH = img.height * imgScale;
+          ctx.drawImage(img, padL + (availW - drawW) / 2, padT + (availH - drawH) / 2, drawW, drawH);
+        }
+        finalSignatureImage = canvas.toDataURL('image/png');
+      } else if (capturedImage) {
+        finalSignatureImage = capturedImage;
+      }
+
       if (!finalSignatureImage) {
-        // Generated a canvas image exactly like Dashboard.jsx to match "Only Me" mode perfectly!
-        const getFieldSize = (sig) => {
-          if (sig.type === 'stamp') return { w: 120, h: 120 };
-          return { w: sig.metadata?.w || 140, h: sig.metadata?.h || 50 };
-        };
-        const { w, h } = getFieldSize(signature);
-        const scale = 3;
-        const defaultPadX = signature.type === 'stamp' ? 8 : 6;
-        const defaultPadY = signature.type === 'stamp' ? 6 : 4;
+        // Generate canvas image for text-based signature / initials
+        const defaultPadX = 6;
+        const defaultPadY = 4;
         const padTop = meta.padTop !== undefined ? meta.padTop : defaultPadY;
         const padBottom = meta.padBottom !== undefined ? meta.padBottom : defaultPadY;
         const padLeft = meta.padLeft !== undefined ? meta.padLeft : defaultPadX;
         const padRight = meta.padRight !== undefined ? meta.padRight : defaultPadX;
-        const border = 2;
-        const headerH = 16;
-        const actualPadL = padLeft + border;
-        const actualPadR = padRight + border;
-        const actualPadT = padTop + border + headerH;
-        const actualPadB = padBottom + border;
+        const actualPadL = padLeft;
+        const actualPadR = padRight;
+        const actualPadT = padTop;
+        const actualPadB = padBottom;
 
         const canvas = document.createElement('canvas');
         canvas.width = w * scale;
@@ -408,13 +464,17 @@ export default function Sign() {
   };
 
   /* ── Reject ── */
-  const handleReject = async () => {
+  const handleReject = () => {
     if (!token) return;
-    const reason = window.prompt("Please provide a reason for rejection (optional):");
-    if (reason === null) return; // cancelled
+    setRejectReason('');
+    setShowRejectModal(true);
+  };
+
+  const confirmReject = async () => {
+    setShowRejectModal(false);
     try {
       setRejecting(true);
-      await signTokenApi(token, { action: 'reject', reason });
+      await signTokenApi(token, { action: 'reject', reason: rejectReason.trim() });
       setSignSuccess(true);
       const data = await validateTokenApi(token);
       setSignature(data.signature);
@@ -477,19 +537,26 @@ export default function Sign() {
 
   /* ── Already Signed/Rejected ── */
   if (signature && (signature.status === 'signed' || signature.status === 'rejected')) {
+    const isCompleted = signature.status === 'signed';
+    const statusTitle = isCompleted
+      ? (role === 'Validator' ? 'Approval Completed' : role === 'Witness' ? 'Witnessing Completed' : 'Signature Completed')
+      : (role === 'Validator' ? 'Approval Declined' : role === 'Witness' ? 'Witnessing Declined' : 'Signature Rejected');
+      
+    const statusDesc = isCompleted
+      ? (role === 'Validator' ? 'This document has already been approved and validated.' : role === 'Witness' ? 'This document signature has already been witnessed.' : 'This document has already been signed successfully.')
+      : (role === 'Validator' ? 'You have declined to approve this document.' : role === 'Witness' ? 'You have declined to witness this document.' : 'You have rejected signing this document.');
+
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-gray-50 p-6">
         <div className="max-w-sm w-full bg-white rounded-2xl shadow-lg border p-8 text-center">
-          <div className={`w-14 h-14 ${signature.status === 'signed' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'} rounded-full flex items-center justify-center mx-auto mb-4`}>
-            {signature.status === 'signed' ? <CheckIcon /> : <XIcon />}
+          <div className={`w-14 h-14 ${isCompleted ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'} rounded-full flex items-center justify-center mx-auto mb-4`}>
+            {isCompleted ? <CheckIcon /> : <XIcon />}
           </div>
           <h2 className="text-xl font-bold text-gray-900 mb-2">
-            Signature {signature.status === 'signed' ? 'Completed' : 'Rejected'}
+            {statusTitle}
           </h2>
           <p className="text-gray-500 mb-6 text-sm">
-            {signature.status === 'signed' 
-              ? 'This document has already been signed successfully.' 
-              : 'You have rejected signing this document.'}
+            {statusDesc}
           </p>
           <Link to="/" className="inline-flex items-center gap-2 bg-[#e8222c] text-white px-6 py-2.5 rounded-lg font-bold hover:opacity-90 transition text-sm">
             Go home
@@ -499,23 +566,32 @@ export default function Sign() {
     );
   }
   /* ── Success screen ── */
-  if (signSuccess || signature?.status === 'signed') return (
-    <div className="fixed inset-0 flex items-center justify-center p-6" style={{ background: 'linear-gradient(135deg, #f0fdf4, #dcfce7)' }}>
-      <div className="max-w-sm w-full bg-white rounded-3xl shadow-2xl border p-10 text-center">
-        <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow">
-          <CheckIcon />
+  if (signSuccess || signature?.status === 'signed') {
+    const successTitle = role === 'Validator' ? 'Document Approved!' : role === 'Witness' ? 'Signature Witnessed!' : 'Document Signed!';
+    const successDesc = role === 'Validator'
+      ? 'has been approved and validated.'
+      : role === 'Witness'
+        ? 'signature has been witnessed.'
+        : 'has been signed.';
+
+    return (
+      <div className="fixed inset-0 flex items-center justify-center p-6" style={{ background: 'linear-gradient(135deg, #f0fdf4, #dcfce7)' }}>
+        <div className="max-w-sm w-full bg-white rounded-3xl shadow-2xl border p-10 text-center">
+          <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow">
+            <CheckIcon />
+          </div>
+          <h2 className="text-2xl font-black text-gray-900 mb-2">{successTitle}</h2>
+          <p className="text-gray-500 text-sm mb-2">
+            <strong>{docData?.original_name || docData?.originalName}</strong> {successDesc}
+          </p>
+          <p className="text-xs text-gray-400 mb-8">The document owner can now download the signed version.</p>
+          <Link to="/" className="inline-flex items-center gap-2 bg-green-600 text-white px-8 py-3 rounded-2xl font-black hover:bg-green-700 transition shadow text-sm">
+            <CheckIcon /> Done
+          </Link>
         </div>
-        <h2 className="text-2xl font-black text-gray-900 mb-2">Document Signed!</h2>
-        <p className="text-gray-500 text-sm mb-2">
-          <strong>{docData?.original_name || docData?.originalName}</strong> has been signed.
-        </p>
-        <p className="text-xs text-gray-400 mb-8">The document owner can now download the signed version.</p>
-        <Link to="/" className="inline-flex items-center gap-2 bg-green-600 text-white px-8 py-3 rounded-2xl font-black hover:bg-green-700 transition shadow text-sm">
-          <CheckIcon /> Done
-        </Link>
       </div>
-    </div>
-  );
+    );
+  }
 
   /* ── "Who will sign?" selection modal ── */
   if (flowStep === 'selection') {
@@ -661,7 +737,7 @@ export default function Sign() {
             style={{ background: '#f0f1f5', padding: isSmallScreen ? 12 : 32, userSelect: 'none', WebkitUserSelect: 'none' }}
             onClick={() => setIsSelected(false)}
           >
-            <div className="relative" style={{ boxShadow: '0 4px 32px rgba(0,0,0,0.18)' }}>
+            <div ref={pageCanvasRef} className="relative" style={{ boxShadow: '0 4px 32px rgba(0,0,0,0.18)' }}>
               {pdfFileSource && (
                 <Document
                   file={pdfFileSource}
@@ -695,7 +771,41 @@ export default function Sign() {
                     'text':      { label: 'Text',      color: '#1a1a1a', bg: '#f3f4f6' },
                     'stamp':     { label: 'Company Stamp', color: '#8b5cf6', bg: '#f3e8ff' },
                   };
-                  const def = fieldDefs[fType] || fieldDefs['signature'];
+                  const def = { ...fieldDefs[fType] } || { ...fieldDefs['signature'] };
+                  if (role === 'Validator' && fType === 'signature') {
+                    def.label = 'Validator Approval';
+                  } else if (role === 'Witness' && fType === 'signature') {
+                    def.label = 'Witness Signature';
+                  }
+
+                  const isCursive  = fType === 'signature' || fType === 'initials';
+                  const isInitials = fType === 'initials';
+                  
+                  // Height constraint — leave room for ascenders & descenders
+                  const availH = Math.max(20, h - padTop - padBottom);
+                  const maxFontH = isInitials
+                    ? availH * 0.68
+                    : isCursive
+                      ? availH * 0.80
+                      : availH * 0.68;
+
+                  // Width constraint — character width estimates per 1em
+                  const availW = Math.max(20, w - padLeft - padRight);
+                  const textStr = (fType === 'initials' ? initials : name) || def.label;
+                  let estWidthEms = 0;
+                  for (let i = 0; i < textStr.length; i++) {
+                    const c = textStr[i];
+                    if (c === ' ') {
+                      estWidthEms += isCursive ? 0.30 : 0.32;
+                    } else if (c === c.toUpperCase() && c.toLowerCase() !== c.toUpperCase()) {
+                      estWidthEms += isInitials ? 0.85 : (isCursive ? 0.68 : 0.75);
+                    } else {
+                      estWidthEms += isInitials ? 0.55 : (isCursive ? 0.48 : 0.50);
+                    }
+                  }
+
+                  const maxFontW = availW / Math.max(1, estWidthEms);
+                  const FONT_SIZE = Math.round(Math.min(maxFontH, maxFontW));
 
                   return (
                     <div
@@ -745,7 +855,13 @@ export default function Sign() {
                           capturedImage ? (
                             <img src={capturedImage} alt="Signature" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} draggable={false} />
                           ) : (
-                            <div className={currentFont.cls} style={{ fontSize: currentFont.size, color: sigEditColor, whiteSpace: 'nowrap' }}>
+                            <div className={isCursive ? currentFont.cls : ''} style={{
+                              fontSize: FONT_SIZE,
+                              fontFamily: isCursive ? undefined : 'Inter, sans-serif',
+                              color: sigEditColor,
+                              whiteSpace: 'nowrap',
+                              fontStyle: isCursive ? 'italic' : 'normal'
+                            }}>
                               {fType === 'initials' ? initials : name}
                             </div>
                           )
@@ -786,7 +902,10 @@ export default function Sign() {
             <button
               className="flex items-center gap-2 bg-white text-gray-800 font-bold px-4 py-3 rounded-2xl shadow-xl hover:bg-gray-50 active:scale-95 transition-all border border-gray-200"
               style={{ boxShadow: '0 8px 30px rgba(0,0,0,0.1)' }}
-              onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+              onClick={() => {
+                if (wasDraggingRef.current) return;
+                setShowMobileSidebar(!showMobileSidebar);
+              }}
             >
               <Settings className="w-5 h-5" />
               <span className="text-sm">Options</span>
@@ -806,6 +925,18 @@ export default function Sign() {
           {showMobileSidebar && (
             <div
               className="lg:hidden fixed inset-0 z-[70] bg-black/30"
+              onTouchStart={(e) => {
+                touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+              }}
+              onTouchEnd={(e) => {
+                if (touchStartRef.current) {
+                  const dx = Math.abs(e.changedTouches[0].clientX - touchStartRef.current.x);
+                  const dy = Math.abs(e.changedTouches[0].clientY - touchStartRef.current.y);
+                  if (dx > 10 || dy > 10) return;
+                }
+                e.preventDefault();
+                setShowMobileSidebar(false);
+              }}
               onClick={() => setShowMobileSidebar(false)}
             />
           )}
@@ -814,14 +945,16 @@ export default function Sign() {
           <aside
             className={`shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col overflow-hidden
               fixed lg:static inset-y-0 right-0 z-[80] w-[85vw] sm:w-[340px] lg:w-[320px]
-              transition-transform duration-300 ease-out
+              transform transition-transform duration-300 ease-out
               ${showMobileSidebar ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
             `}
             style={{ top: 0, boxShadow: showMobileSidebar ? '-8px 0 40px rgba(0,0,0,0.15)' : 'none' }}
           >
             {/* Header */}
             <div className="shrink-0 flex items-center justify-between px-6 border-b border-gray-100" style={{ height: 56 }}>
-              <h2 className="font-bold text-gray-900" style={{ fontSize: 22 }}>Signing options</h2>
+              <h2 className="font-bold text-gray-900" style={{ fontSize: 20 }}>
+                {role === 'Validator' ? 'Approval Options' : role === 'Witness' ? 'Witness Options' : 'Signing options'}
+              </h2>
               <button
                 className="lg:hidden p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
                 onClick={() => setShowMobileSidebar(false)}
@@ -834,7 +967,9 @@ export default function Sign() {
 
               {/* Required Action */}
               <div>
-                <p className="text-xs font-semibold text-gray-500 mb-3 uppercase" style={{ letterSpacing: 0.5 }}>Required Action</p>
+                <p className="text-xs font-semibold text-gray-500 mb-3 uppercase" style={{ letterSpacing: 0.5 }}>
+                  {role === 'Validator' ? 'Required Approval' : role === 'Witness' ? 'Required Witness Signature' : 'Required Action'}
+                </p>
                 {(() => {
                   const fType = signature?.type || 'signature';
                   const fieldDefs = {
@@ -845,7 +980,12 @@ export default function Sign() {
                     'text':      { label: 'Text',      color: '#1a1a1a', icon: <AlignLeft size={18} color="#ffffff" /> },
                     'stamp':     { label: 'Company Stamp', color: '#8b5cf6', icon: <BadgeCheck size={18} color="#ffffff" /> },
                   };
-                  const def = fieldDefs[fType] || fieldDefs['signature'];
+                  const def = { ...fieldDefs[fType] } || { ...fieldDefs['signature'] };
+                  if (role === 'Validator' && fType === 'signature') {
+                    def.label = 'Validator Approval';
+                  } else if (role === 'Witness' && fType === 'signature') {
+                    def.label = 'Witness Signature';
+                  }
                   
                   return (
                     <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer hover:shadow-md transition"
@@ -889,7 +1029,12 @@ export default function Sign() {
                 className="flex items-center justify-between w-full rounded-xl text-white font-bold text-xl px-6 transition hover:opacity-90 disabled:opacity-40"
                 style={{ background: '#e8222c', height: 56 }}
               >
-                <span>{signing ? 'Signing...' : 'Sign'}</span>
+                <span>
+                  {signing 
+                    ? (role === 'Validator' ? 'Approving...' : role === 'Witness' ? 'Witnessing...' : 'Signing...')
+                    : (role === 'Validator' ? 'Validate & Approve' : role === 'Witness' ? 'Witness & Sign' : 'Sign')
+                  }
+                </span>
                 <div className="flex items-center justify-center w-9 h-9 rounded-full" style={{ background: 'rgba(255,255,255,0.2)' }}>
                   <PlayCircle className="w-5 h-5 text-white" />
                 </div>
@@ -900,7 +1045,10 @@ export default function Sign() {
                 className="flex items-center justify-center w-full rounded-xl text-[#e8222c] font-bold text-lg border-2 border-[#e8222c] transition hover:bg-red-50 disabled:opacity-40"
                 style={{ height: 48 }}
               >
-                {rejecting ? 'Rejecting...' : 'Reject Document'}
+                {rejecting 
+                  ? 'Rejecting...' 
+                  : (role === 'Validator' ? 'Reject Approval' : role === 'Witness' ? 'Decline Witnessing' : 'Reject Document')
+                }
               </button>
             </div>
           </aside>
@@ -925,7 +1073,12 @@ export default function Sign() {
             {/* Modal header */}
             <div className="flex items-center justify-between px-8 pt-7 pb-5 shrink-0">
               <h2 className="font-bold text-gray-900" style={{ fontSize: 24 }}>
-                {modalTab === 'stamp' ? 'Set your company stamp' : modalTab === 'initials_tab' ? 'Set your initials' : 'Set your signature details'}
+                {modalTab === 'stamp' 
+                  ? 'Set your company stamp' 
+                  : modalTab === 'initials_tab' 
+                    ? 'Set your initials' 
+                    : (role === 'Validator' ? 'Set your approval details' : role === 'Witness' ? 'Set your witness signature details' : 'Set your signature details')
+                }
               </h2>
               <Link
                 to="/login"
@@ -1005,7 +1158,7 @@ export default function Sign() {
             </div>
 
             {/* ── Tab content area ── */}
-            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 320 }}>
+            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 180, maxHeight: 280 }}>
 
               {/* Left icon strip (Type/Draw/Upload sub-tabs) — only for Signature / Initials tab */}
               {(modalTab === 'type' || modalTab === 'initials_tab') && (
@@ -1201,6 +1354,100 @@ export default function Sign() {
                 style={{ background: '#f87171' }} // Using the specific light red visible in user's image, wait the image showed pink/light-red (could be from transparency disabled or actual color `#f87171` if disabled) Wait, in Home.jsx the background is #e8222c. 
               >
                 Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reject Reason Modal ── */}
+      {showRejectModal && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0"
+            style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}
+            onClick={() => setShowRejectModal(false)}
+          />
+
+          {/* Card */}
+          <div
+            className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
+            style={{ maxWidth: 440, boxShadow: '0 24px 80px rgba(0,0,0,0.22)' }}
+          >
+            {/* Header */}
+            <div className="flex items-center gap-3 px-6 pt-6 pb-4 border-b border-gray-100">
+              <div
+                className="shrink-0 flex items-center justify-center rounded-xl"
+                style={{ width: 40, height: 40, background: '#fef2f2' }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="#e8222c" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-gray-900 text-base">
+                  {role === 'Validator' ? 'Decline Approval' : role === 'Witness' ? 'Decline Witnessing' : 'Reject Document'}
+                </p>
+                <p className="text-xs text-gray-400 mt-0.5">Provide an optional reason for the document owner</p>
+              </div>
+              <button
+                onClick={() => setShowRejectModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-5">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Reason for rejection
+                <span className="ml-1 font-normal text-gray-400">(optional)</span>
+              </label>
+              <textarea
+                id="reject-reason-input"
+                autoFocus
+                rows={4}
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) confirmReject();
+                  if (e.key === 'Escape') setShowRejectModal(false);
+                }}
+                placeholder="e.g. Incorrect information, missing signature, wrong document..."
+                className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm text-gray-800 resize-none outline-none transition leading-relaxed"
+                style={{ background: '#f9fafb' }}
+                onFocus={e => e.target.style.borderColor = '#e8222c'}
+                onBlur={e => e.target.style.borderColor = '#d1d5db'}
+              />
+              <p className="mt-1.5 text-[11px] text-gray-400">Press Ctrl + Enter to confirm</p>
+            </div>
+
+            {/* Footer */}
+            <div className="shrink-0 flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
+              <button
+                onClick={() => setShowRejectModal(false)}
+                className="px-5 py-2.5 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmReject}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-white font-bold text-sm transition hover:opacity-90"
+                style={{ background: '#e8222c' }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+                {role === 'Validator' ? 'Decline Approval' : role === 'Witness' ? 'Decline Witnessing' : 'Reject Document'}
               </button>
             </div>
           </div>

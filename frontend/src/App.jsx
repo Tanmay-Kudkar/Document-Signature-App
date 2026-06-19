@@ -38,7 +38,7 @@ function App() {
   }, [location]);
 
   return (
-    <div className="min-h-screen w-full flex flex-col font-sans text-gray-800 animate-page-fade overflow-x-hidden">
+    <div className="min-h-screen w-full flex flex-col font-sans text-gray-800 overflow-x-hidden">
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />

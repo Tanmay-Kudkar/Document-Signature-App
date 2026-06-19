@@ -442,29 +442,31 @@ export const validateSignatureToken = async (req, res) => {
         const docResult = await pool.query('SELECT id, original_name, status, file_data FROM documents WHERE id = $1', [signature.document_id]);
         if (docResult.rows.length === 0) return res.status(404).json({ error: 'Document not found' });
 
-        // Try to find the receiver name & email for auditing
+        // Try to find the receiver details for auditing & tailoring UI
         let receiverName = 'Unknown Receiver';
         let receiverEmail = 'Unknown Email';
+        let receiverObj = null;
         try {
             if (signature.metadata && signature.metadata.receiverId) {
-                const receiverResult = await pool.query('SELECT name, email FROM document_receivers WHERE id = $1', [signature.metadata.receiverId]);
+                const receiverResult = await pool.query('SELECT id, name, email, role, auth_format FROM document_receivers WHERE id = $1', [signature.metadata.receiverId]);
                 if (receiverResult.rows.length > 0) {
-                    receiverName = receiverResult.rows[0].name;
-                    receiverEmail = receiverResult.rows[0].email;
+                    receiverObj = receiverResult.rows[0];
+                    receiverName = receiverObj.name;
+                    receiverEmail = receiverObj.email;
                 }
             }
         } catch (err) {
-            console.error('Error fetching receiver for audit:', err);
+            console.error('Error fetching receiver for audit & response:', err);
         }
 
         await logAudit({
             documentId: signature.document_id,
             action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
             req,
-            metadata: { signatureId: signature.id, receiverName, receiverEmail }
+            metadata: { signatureId: signature.id, receiverName, receiverEmail, role: receiverObj?.role || 'Signer' }
         });
 
-        res.status(200).json({ signature, document: docResult.rows[0] });
+        res.status(200).json({ signature, document: docResult.rows[0], receiver: receiverObj });
     } catch (err) {
         console.error('Error validating token', err);
         res.status(500).json({ error: 'Internal server error' });
@@ -690,26 +692,34 @@ export const signWithToken = async (req, res) => {
         await pool.query('UPDATE documents SET file_data = $1, status = $2 WHERE id = $3', [Buffer.from(modifiedBytes), 'signed', document.id]);
         await updateSignatureStatus(signature.id, 'signed');
         
-        // Try to find the receiver name & email for auditing
+        // Try to find the receiver details for auditing
         let receiverName = signerName || 'Unknown Receiver';
         let receiverEmail = 'Unknown Email';
+        let receiverRole = 'Signer';
         try {
             if (signature.metadata && signature.metadata.receiverId) {
-                const receiverResult = await pool.query('SELECT name, email FROM document_receivers WHERE id = $1', [signature.metadata.receiverId]);
+                const receiverResult = await pool.query('SELECT name, email, role FROM document_receivers WHERE id = $1', [signature.metadata.receiverId]);
                 if (receiverResult.rows.length > 0) {
                     receiverName = receiverResult.rows[0].name;
                     receiverEmail = receiverResult.rows[0].email;
+                    receiverRole = receiverResult.rows[0].role || 'Signer';
                 }
             }
         } catch (err) {
             console.error('Error fetching receiver for audit:', err);
         }
 
+        const auditAction = receiverRole === 'Validator'
+            ? 'DOCUMENT_VALIDATED'
+            : receiverRole === 'Witness'
+                ? 'DOCUMENT_WITNESSED'
+                : AUDIT_ACTIONS.DOCUMENT_SIGNED;
+
         await logAudit({
             documentId: document.id,
-            action: AUDIT_ACTIONS.DOCUMENT_SIGNED,
+            action: auditAction,
             req,
-            metadata: { signatureId: signature.id, receiverName, receiverEmail }
+            metadata: { signatureId: signature.id, receiverName, receiverEmail, role: receiverRole }
         });
 
         res.status(200).json({ message: 'Document signed successfully' });
