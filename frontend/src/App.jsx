@@ -8,6 +8,7 @@ import Sign from './pages/Sign';
 import SignedSuccess from './pages/SignedSuccess';
 import Layout from './components/Layout';
 import Home from './pages/Home';
+import ServerWakeup from './components/ServerWakeup';
 
 function App() {
   const location = useLocation();
@@ -38,18 +39,20 @@ function App() {
   }, [location]);
 
   return (
-    <div className="min-h-screen w-full flex flex-col font-sans text-gray-800 overflow-x-hidden">
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route element={<Layout />}>
-          <Route index element={<Home />} />
-          <Route path="dashboard" element={<Dashboard />} />
-          <Route path="sign" element={<Sign />} />
-          <Route path="signed" element={<SignedSuccess />} />
-        </Route>
-      </Routes>
-    </div>
+    <ServerWakeup>
+      <div className="min-h-screen w-full flex flex-col font-sans text-gray-800 overflow-x-hidden">
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route element={<Layout />}>
+            <Route index element={<Home />} />
+            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="sign" element={<Sign />} />
+            <Route path="signed" element={<SignedSuccess />} />
+          </Route>
+        </Routes>
+      </div>
+    </ServerWakeup>
   );
 }
 

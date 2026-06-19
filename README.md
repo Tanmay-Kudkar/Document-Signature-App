@@ -17,7 +17,7 @@
   <a href="#"><img alt="Styling-TailwindCSS" src="https://img.shields.io/badge/Styling-Tailwind_CSS-06B6D4?logo=tailwindcss&logoColor=white"></a>
 </p>
 
-## Tech Stack Icons (Large)
+## Tech Stack Icons
 
 <table align="center">
   <tr>

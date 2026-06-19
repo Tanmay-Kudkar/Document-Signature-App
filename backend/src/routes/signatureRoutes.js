@@ -1,5 +1,6 @@
 import express from 'express';
 import { authenticateToken } from '../middlewares/authMiddleware.js';
+import { validateUuidParams } from '../middlewares/validationMiddleware.js';
 import {
   generateSignatureToken,
   validateSignatureToken,
@@ -9,7 +10,7 @@ import {
 const router = express.Router();
 
 // Owner generates a token for a specific signature
-router.post('/:signatureId/token', authenticateToken, generateSignatureToken);
+router.post('/:signatureId/token', validateUuidParams(['signatureId']), authenticateToken, generateSignatureToken);
 
 // Public: validate token and get signature/document info
 router.get('/validate', validateSignatureToken);

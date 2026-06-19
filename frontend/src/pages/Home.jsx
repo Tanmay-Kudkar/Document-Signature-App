@@ -426,7 +426,7 @@ export default function Home() {
 
       {/* ── Signature Config Modal ── */}
       {showSigConfig && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-2 sm:p-4">
           <div
             className="absolute inset-0"
             style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }}
@@ -435,7 +435,14 @@ export default function Home() {
 
           <div
             className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
-            style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}
+            style={{
+              maxWidth: 700,
+              width: 'calc(100% - 16px)',
+              maxHeight: '95vh',
+              boxShadow: '0 24px 80px rgba(0,0,0,0.2)',
+              transform: 'translate3d(0,0,0)',
+              backfaceVisibility: 'hidden',
+            }}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
                 e.preventDefault();
@@ -444,8 +451,8 @@ export default function Home() {
             }}
           >
             {/* Modal header */}
-            <div className="flex items-center justify-between px-5 sm:px-8 pt-5 sm:pt-7 pb-5 shrink-0">
-              <h2 className="font-bold text-gray-900 text-lg sm:text-[24px]">Set your signature details</h2>
+            <div className="flex items-center justify-between px-4 py-4 sm:px-8 sm:pt-7 sm:pb-5 shrink-0 border-b border-gray-50">
+              <h2 className="font-bold text-gray-900 text-[18px] sm:text-[24px]">Set your signature details</h2>
               <Link
                 to="/login"
                 className="text-sm font-bold text-[#e8222c] border-2 border-[#e8222c] px-4 py-1.5 rounded-lg hover:bg-red-50 transition"
@@ -455,23 +462,23 @@ export default function Home() {
             </div>
 
             {/* Name + Initials + Avatar row */}
-            <div className="flex flex-col sm:flex-row items-center gap-4 px-5 sm:px-8 pb-5 shrink-0">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4 px-4 sm:px-8 py-4 sm:pb-5 shrink-0">
               {/* Avatar circle */}
               <div
-                className="shrink-0 flex items-center justify-center rounded-full mt-5"
+                className="hidden sm:flex shrink-0 items-center justify-center rounded-full mt-5"
                 style={{ width: 44, height: 44, border: '2px solid #e8222c' }}
               >
                 <User className="w-6 h-6 text-[#e8222c] opacity-60" />
               </div>
 
               {/* Full name */}
-              <div className="flex-1 min-w-0 w-full">
+              <div className="flex-1">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full name:</label>
                 <input
                   value={sigConfig.name}
                   onChange={e => setSigConfig({ ...sigConfig, name: e.target.value })}
                   placeholder="Your name"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-800 outline-none transition"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium text-gray-800 outline-none transition"
                   style={{ background: '#f9fafb' }}
                   onFocus={e => e.target.style.borderColor = '#e8222c'}
                   onBlur={e => e.target.style.borderColor = '#d1d5db'}
@@ -479,7 +486,7 @@ export default function Home() {
               </div>
 
               {/* Initials */}
-              <div className="shrink-0 w-full sm:w-[160px]">
+              <div className="w-full sm:w-[160px]">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Initials:</label>
                 <input
                   value={sigConfig.initials}
@@ -488,7 +495,7 @@ export default function Home() {
                     setSigConfig({ ...sigConfig, initials: e.target.value.toUpperCase() });
                   }}
                   placeholder="Your initials"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-bold text-gray-800 uppercase outline-none transition"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-bold text-gray-800 uppercase outline-none transition"
                   style={{ background: '#f9fafb' }}
                   onFocus={e => e.target.style.borderColor = '#e8222c'}
                   onBlur={e => e.target.style.borderColor = '#d1d5db'}
@@ -497,16 +504,16 @@ export default function Home() {
             </div>
 
             {/* ── Tabs: Signature | Initials | Company Stamp ── */}
-            <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
+            <div className="flex items-center border-b border-gray-200 px-4 sm:px-8 shrink-0">
               {[
                 { id: 'type', label: 'Signature', icon: <PenTool className="w-4 h-4" /> },
-                { id: 'initials_tab', label: 'AC Initials', icon: <span className="font-bold" style={{ fontSize: 12 }}>AC</span> },
+                { id: 'initials_tab', label: 'Initials', icon: <span className="font-bold text-[11px] sm:text-[12px]">AC</span> },
                 { id: 'stamp', label: 'Company Stamp', icon: <BadgeCheck className="w-4 h-4" /> },
               ].map(tab => (
                 <button
                   key={tab.id}
                   onClick={() => { setModalTab(tab.id); setModalSubTab('type'); }}
-                  className="flex items-center gap-2 px-5 py-3 font-semibold text-sm transition border-b-2"
+                  className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-5 py-3 font-semibold text-xs sm:text-sm transition border-b-2"
                   style={{
                     borderBottomColor: modalTab === tab.id ? '#e8222c' : 'transparent',
                     color: modalTab === tab.id ? '#1a1a1a' : '#9ca3af',
@@ -520,7 +527,7 @@ export default function Home() {
             </div>
 
             {/* ── Tab content area ── */}
-            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 220, maxHeight: 340 }}>
+            <div className="flex flex-1 overflow-hidden" style={{ height: 280 }}>
 
               {/* Left icon strip (Type/Draw/Upload sub-tabs) — only for Signature and Initials tabs */}
               {(modalTab === 'type' || modalTab === 'initials_tab') && (
@@ -578,7 +585,13 @@ export default function Home() {
                         />
                         <span
                           className={`flex-1 min-w-0 truncate ${font.cls}`}
-                          style={{ fontSize: font.size, color: sigConfig.color || '#1a1a1a', lineHeight: 1.1 }}
+                          style={{
+                            fontSize: font.size,
+                            color: sigConfig.color || '#1a1a1a',
+                            lineHeight: 1.1,
+                            transform: 'translate3d(0,0,0)',
+                            backfaceVisibility: 'hidden',
+                          }}
                         >
                           {modalTab === 'initials_tab'
                             ? (sigConfig.initials || 'AB')
@@ -710,42 +723,49 @@ export default function Home() {
             </div>
 
             {/* ── Color picker row — shown for type/draw tabs (not stamp) ── */}
-            {modalTab !== 'stamp' && (
-              <div className="flex items-center gap-3 px-8 py-3 border-t border-gray-100">
-                <span className="text-xs font-semibold text-gray-500">Color:</span>
-                {PRESET_COLORS.map(p => (
-                  <button key={p.color}
-                    onClick={() => setSigConfig({ ...sigConfig, color: p.color })}
-                    className="w-7 h-7 rounded-full border-2 transition"
-                    style={{
-                      background: p.color,
-                      borderColor: sigConfig.color === p.color ? '#94a3b8' : 'transparent',
-                      boxShadow: sigConfig.color === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none',
-                    }}
-                    title={p.label}
-                  />
-                ))}
-                {/* Custom color wheel */}
-                <label
-                  className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex-shrink-0"
+            <div className="flex items-center gap-3 px-8 border-t border-gray-100 overflow-hidden"
+              style={{
+                height: modalTab !== 'stamp' ? 53 : 0,
+                paddingTop: modalTab !== 'stamp' ? 12 : 0,
+                paddingBottom: modalTab !== 'stamp' ? 12 : 0,
+                borderTopColor: modalTab !== 'stamp' ? 'rgba(241, 245, 249, 1)' : 'transparent',
+                transition: 'all 0.3s ease-in-out',
+                opacity: modalTab !== 'stamp' ? 1 : 0,
+              }}
+            >
+              <span className="text-xs font-semibold text-gray-500">Color:</span>
+              {PRESET_COLORS.map(p => (
+                <button key={p.color}
+                  onClick={() => setSigConfig({ ...sigConfig, color: p.color })}
+                  className="w-7 h-7 rounded-full border-2 transition"
                   style={{
-                    background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                    borderColor: !PRESET_COLORS.find(p => p.color === sigConfig.color) ? '#94a3b8' : '#e5e7eb',
-                    boxShadow: !PRESET_COLORS.find(p => p.color === sigConfig.color)
-                      ? `0 0 0 2px white, 0 0 0 4px ${sigConfig.color}`
-                      : 'none',
+                    background: p.color,
+                    borderColor: sigConfig.color === p.color ? '#94a3b8' : 'transparent',
+                    boxShadow: sigConfig.color === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none',
                   }}
-                  title="Custom color"
-                >
-                  <input
-                    type="color"
-                    value={sigConfig.color}
-                    onChange={e => setSigConfig({ ...sigConfig, color: e.target.value })}
-                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-                  />
-                </label>
-              </div>
-            )}
+                  title={p.label}
+                />
+              ))}
+              {/* Custom color wheel */}
+              <label
+                className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex-shrink-0"
+                style={{
+                  background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                  borderColor: !PRESET_COLORS.find(p => p.color === sigConfig.color) ? '#94a3b8' : '#e5e7eb',
+                  boxShadow: !PRESET_COLORS.find(p => p.color === sigConfig.color)
+                    ? `0 0 0 2px white, 0 0 0 4px ${sigConfig.color}`
+                    : 'none',
+                }}
+                title="Custom color"
+              >
+                <input
+                  type="color"
+                  value={sigConfig.color}
+                  onChange={e => setSigConfig({ ...sigConfig, color: e.target.value })}
+                  className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                />
+              </label>
+            </div>
 
             {/* Modal footer */}
             <div className="shrink-0 flex items-center justify-end gap-3 px-8 py-4 border-t border-gray-100">

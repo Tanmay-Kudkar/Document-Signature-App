@@ -7,6 +7,7 @@ import {
 } from '../lib/documents';
 import { Document, Page } from 'react-pdf';
 import SignatureCanvas from '../components/SignatureCanvas';
+import { useActivitySpinner } from '../lib/useActivitySpinner.jsx';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -48,6 +49,9 @@ export default function Sign() {
   const [docData, setDocData]       = useState(null);
   const [receiver, setReceiver]     = useState(null);
   const role = receiver?.role || 'Signer';
+
+  /* Activity spinner */
+  const { startActivity, stopActivity, ActivitySpinner } = useActivitySpinner();
 
   /* PDF viewer */
   const pdfWrapperRef = useRef(null);
@@ -199,7 +203,8 @@ export default function Sign() {
 
   /* ── Resize logic ── */
   const handleResizeStart = (e, sig, dir) => {
-    e.stopPropagation(); e.preventDefault();
+    e.stopPropagation();
+    if (e.cancelable) e.preventDefault();
     if (!pageCanvasRef.current) return;
     const w = sig.metadata?.w || 200;
     const h = sig.metadata?.h || 50;
@@ -220,7 +225,12 @@ export default function Sign() {
     const meta = sig.metadata || {};
     const defaultPadX = sig.type === 'stamp' ? 8 : 6;
     const defaultPadY = sig.type === 'stamp' ? 6 : 4;
-    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+
+    const isTouch = !!e.touches;
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
+    dragStartPosRef.current = { x: clientX, y: clientY };
     hasMovedRef.current = false;
     setResizingInfo({ 
       fieldId: sig.id, dir, anchorX, anchorY, currentH: h, currentW: w,
@@ -232,17 +242,24 @@ export default function Sign() {
   };
 
   const handleGlobalMouseMove = (e) => {
+    const isTouch = !!e.touches;
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
     if (resizingInfo || isDraggingField) {
-      const dx = e.clientX - dragStartPosRef.current.x;
-      const dy = e.clientY - dragStartPosRef.current.y;
+      if (isTouch && e.cancelable) {
+        e.preventDefault();
+      }
+      const dx = clientX - dragStartPosRef.current.x;
+      const dy = clientY - dragStartPosRef.current.y;
       if (Math.sqrt(dx * dx + dy * dy) > 3) {
         hasMovedRef.current = true;
       }
     }
     if (resizingInfo && pageCanvasRef.current) {
       const rect = pageCanvasRef.current.getBoundingClientRect();
-      const mx = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-      const my = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+      const mx = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const my = Math.max(0, Math.min(rect.height, clientY - rect.top));
       const { dir, anchorX, anchorY } = resizingInfo;
       let newW, newH, newCX, newCY;
       let padTop = resizingInfo.padTop, padBottom = resizingInfo.padBottom, padLeft = resizingInfo.padLeft, padRight = resizingInfo.padRight;
@@ -292,8 +309,10 @@ export default function Sign() {
       const w = meta.w || 200;
       const h = meta.h || 50;
 
-      const mx = e.clientX - dragOffsetRef.current.ox - rect.left;
-      const my = e.clientY - dragOffsetRef.current.oy - rect.top;
+      // Subtract grab offset so the field doesn't snap its center to the cursor
+      const { ox, oy } = dragOffsetRef.current;
+      const mx = clientX - ox - rect.left;
+      const my = clientY - oy - rect.top;
 
       const wPct = (w / rect.width) * 100;
       const hPct = (h / rect.height) * 100;
@@ -315,8 +334,13 @@ export default function Sign() {
     const rect = pageCanvasRef.current.getBoundingClientRect();
     const centerX = (signature.x / 100) * rect.width + rect.left;
     const centerY = (signature.y / 100) * rect.height + rect.top;
-    dragOffsetRef.current = { ox: e.clientX - centerX, oy: e.clientY - centerY };
-    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+
+    const isTouch = !!e.touches;
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
+    dragOffsetRef.current = { ox: clientX - centerX, oy: clientY - centerY };
+    dragStartPosRef.current = { x: clientX, y: clientY };
     hasMovedRef.current = false;
     setIsDraggingField(true);
   };
@@ -336,15 +360,20 @@ export default function Sign() {
   useEffect(() => {
     window.addEventListener('mousemove', handleGlobalMouseMove);
     window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('touchmove', handleGlobalMouseMove, { passive: false });
+    window.addEventListener('touchend', handleGlobalMouseUp);
     return () => {
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('touchmove', handleGlobalMouseMove);
+      window.removeEventListener('touchend', handleGlobalMouseUp);
     };
   }, [resizingInfo, isDraggingField, signature]);
 
   /* ── Sign ── */
   const handleSign = async () => {
     if (!token || !signature) return;
+    startActivity('Submitting signature…');
     try {
       setSigning(true);
       
@@ -460,6 +489,7 @@ export default function Sign() {
       alert(err.message || 'Unable to sign document');
     } finally {
       setSigning(false);
+      stopActivity();
     }
   };
 
@@ -472,6 +502,7 @@ export default function Sign() {
 
   const confirmReject = async () => {
     setShowRejectModal(false);
+    startActivity('Submitting rejection…');
     try {
       setRejecting(true);
       await signTokenApi(token, { action: 'reject', reason: rejectReason.trim() });
@@ -483,6 +514,7 @@ export default function Sign() {
       alert(err.message || 'Unable to reject document');
     } finally {
       setRejecting(false);
+      stopActivity();
     }
   };
 
@@ -596,69 +628,69 @@ export default function Sign() {
   /* ── "Who will sign?" selection modal ── */
   if (flowStep === 'selection') {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4">
         {/* Blurred bg — show editor behind */}
         <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }} />
 
         <div
           className="relative w-full bg-white rounded-2xl overflow-hidden animate-fade-in"
-          style={{ maxWidth: 640, boxShadow: '0 24px 80px rgba(0,0,0,0.18)' }}
+          style={{ maxWidth: 600, width: 'calc(100% - 16px)', boxShadow: '0 24px 80px rgba(0,0,0,0.18)' }}
         >
           {/* Title */}
-          <div className="px-10 pt-10 pb-6 text-center">
-            <h2 className="font-bold text-gray-900" style={{ fontSize: 26 }}>Who will sign this document?</h2>
+          <div className="px-6 pt-6 pb-4 sm:px-10 sm:pt-8 sm:pb-6 text-center">
+            <h2 className="font-bold text-gray-900 text-[20px] sm:text-[24px]">Who will sign this document?</h2>
           </div>
 
           {/* Two cards */}
-          <div className="flex gap-4 px-8 pb-6">
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 px-4 sm:px-8 pb-6">
             {/* Only me */}
             <div
-              className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-8 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition"
+              className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-4 sm:p-6 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition"
               style={{ background: '#fafafa' }}
               onClick={() => setFlowStep('editor')}
             >
               <div
-                className="flex items-center justify-center mb-6 rounded-2xl"
-                style={{ width: 140, height: 130, background: '#dce8f5' }}
+                className="flex items-center justify-center mb-4 sm:mb-6 rounded-2xl"
+                style={{ width: 120, height: 110, background: '#dce8f5' }}
               >
-                <FileSignature className="w-12 h-12 text-[#3d5a9a]" />
+                <FileSignature className="w-10 h-10 text-[#3d5a9a]" />
               </div>
               <button
-                className="w-4/5 text-white font-bold rounded-lg py-3 mb-2 hover:opacity-90 transition"
-                style={{ background: '#e8222c', fontSize: 15 }}
+                className="w-full sm:w-4/5 text-white font-bold rounded-lg py-2.5 mb-1.5 hover:opacity-90 transition"
+                style={{ background: '#e8222c', fontSize: 14 }}
               >
                 Only me
               </button>
-              <p className="text-sm text-gray-500">Sign this document</p>
+              <p className="text-xs sm:text-sm text-gray-500">Sign this document</p>
             </div>
 
             {/* Several people */}
             <div
-              className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-8 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition"
+              className="flex-1 flex flex-col items-center rounded-xl border border-gray-200 p-4 sm:p-6 cursor-pointer hover:border-[#e8222c] hover:shadow-md transition"
               style={{ background: '#fafafa' }}
               onClick={() => setFlowStep('editor')}
             >
               <div
-                className="flex items-center justify-center mb-6 rounded-full"
-                style={{ width: 140, height: 130, background: '#e8f5f0' }}
+                className="flex items-center justify-center mb-4 sm:mb-6 rounded-full"
+                style={{ width: 120, height: 110, background: '#e8f5f0' }}
               >
-                <Users className="w-12 h-12 text-[#4a7fc1]" />
+                <Users className="w-10 h-10 text-[#4a7fc1]" />
               </div>
               <button
-                className="w-4/5 text-white font-bold rounded-lg py-3 mb-2 hover:opacity-90 transition"
-                style={{ background: '#e8222c', fontSize: 15 }}
+                className="w-full sm:w-4/5 text-white font-bold rounded-lg py-2.5 mb-1.5 hover:opacity-90 transition"
+                style={{ background: '#e8222c', fontSize: 14 }}
               >
                 Several people
               </button>
-              <p className="text-sm text-gray-500">Invite others to sign</p>
+              <p className="text-xs sm:text-sm text-gray-500">Invite others to sign</p>
             </div>
           </div>
 
           {/* Footer */}
-          <div className="border-t border-gray-100 px-10 py-4 text-center">
-            <p className="text-sm text-gray-600">
+          <div className="border-t border-gray-100 px-6 sm:px-10 py-3 sm:py-4 text-center">
+            <p className="text-xs sm:text-sm text-gray-600">
               Uploaded documents:{' '}
-              <span className="font-bold text-gray-900">{docData?.original_name || docData?.originalName}</span>
+              <span className="font-bold text-gray-900 break-all">{docData?.original_name || docData?.originalName}</span>
             </p>
           </div>
         </div>
@@ -672,6 +704,7 @@ export default function Sign() {
 
   return (
     <>
+      <ActivitySpinner />
       <div style={{ height: 'calc(100vh - 56px)', display: 'flex', flexDirection: 'column', background: '#f0f1f5', overflow: 'hidden' }}>
 
         {/* ── Toolbar ── */}
@@ -819,6 +852,7 @@ export default function Sign() {
                         cursor: isDraggingField ? 'grabbing' : 'grab'
                       }}
                       onMouseDown={handleFieldMouseDown}
+                      onTouchStart={handleFieldMouseDown}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (wasDraggingRef.current) return;
@@ -889,6 +923,7 @@ export default function Sign() {
                           className="absolute w-3 h-3 bg-white rounded-full z-30"
                           style={{ ...style, border: `2px solid ${def.color}` }}
                           onMouseDown={e => handleResizeStart(e, signature, dir)}
+                          onTouchStart={e => handleResizeStart(e, signature, dir)}
                           onClick={e => e.stopPropagation()} />
                       ))}
                     </div>
@@ -1059,7 +1094,7 @@ export default function Sign() {
           "Set your signature details" Modal — exact ilovepdf design
       ══════════════════════════════════════════════════════════════ */}
       {showModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-2 sm:p-4">
           <div
             className="absolute inset-0"
             style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }}
@@ -1068,11 +1103,18 @@ export default function Sign() {
 
           <div
             className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
-            style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}
+            style={{
+              maxWidth: 700,
+              width: 'calc(100% - 16px)',
+              maxHeight: '95vh',
+              boxShadow: '0 24px 80px rgba(0,0,0,0.2)',
+              transform: 'translate3d(0,0,0)',
+              backfaceVisibility: 'hidden',
+            }}
           >
             {/* Modal header */}
-            <div className="flex items-center justify-between px-8 pt-7 pb-5 shrink-0">
-              <h2 className="font-bold text-gray-900" style={{ fontSize: 24 }}>
+            <div className="flex items-center justify-between px-4 py-4 sm:px-8 sm:pt-7 sm:pb-5 shrink-0 border-b border-gray-50">
+              <h2 className="font-bold text-gray-900 text-[18px] sm:text-[24px]">
                 {modalTab === 'stamp' 
                   ? 'Set your company stamp' 
                   : modalTab === 'initials_tab' 
@@ -1089,10 +1131,10 @@ export default function Sign() {
             </div>
 
             {/* Name + Initials + Avatar row */}
-            <div className="flex items-start gap-4 px-8 pb-5 shrink-0">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4 px-4 sm:px-8 py-4 sm:pb-5 shrink-0">
               {/* Avatar circle */}
               <div
-                className="shrink-0 flex items-center justify-center rounded-full mt-5"
+                className="hidden sm:flex shrink-0 items-center justify-center rounded-full mt-5"
                 style={{ width: 44, height: 44, border: '2px solid #e8222c' }}
               >
                 <User className="w-6 h-6 text-[#e8222c] opacity-60" />
@@ -1106,7 +1148,7 @@ export default function Sign() {
                   onChange={e => setName(e.target.value)}
                   placeholder="Your name"
                   disabled={modalTab === 'stamp'}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-800 outline-none transition disabled:opacity-50"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium text-gray-800 outline-none transition disabled:opacity-50"
                   style={{ background: '#f9fafb' }}
                   onFocus={e => e.target.style.borderColor = '#e8222c'}
                   onBlur={e => e.target.style.borderColor = '#d1d5db'}
@@ -1114,14 +1156,14 @@ export default function Sign() {
               </div>
 
               {/* Initials */}
-              <div style={{ width: 160 }}>
+              <div className="w-full sm:w-[160px]">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Initials:</label>
                 <input
                   value={initials}
                   onChange={e => setInitials(e.target.value.toUpperCase())}
                   placeholder="Your initials"
                   disabled={modalTab === 'stamp'}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-bold text-gray-800 uppercase outline-none transition disabled:opacity-50"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-bold text-gray-800 uppercase outline-none transition disabled:opacity-50"
                   style={{ background: '#f9fafb' }}
                   onFocus={e => e.target.style.borderColor = '#e8222c'}
                   onBlur={e => e.target.style.borderColor = '#d1d5db'}
@@ -1130,13 +1172,13 @@ export default function Sign() {
             </div>
 
             {/* ── Tabs: Signature | Initials | Company Stamp ── */}
-            <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
+            <div className="flex items-center border-b border-gray-200 px-4 sm:px-8 shrink-0">
               {[
                 { id: 'type', label: 'Signature', icon: (
                   <PenTool className="w-4 h-4" />
                 )},
                 { id: 'initials_tab', label: 'Initials', icon: (
-                  <span className="font-bold" style={{ fontSize: 12 }}>AC</span>
+                  <span className="font-bold text-[11px] sm:text-[12px]" style={{ fontSize: 12 }}>AC</span>
                 )},
                 { id: 'stamp', label: 'Company Stamp', icon: (
                   <BadgeCheck className="w-4 h-4" />
@@ -1144,7 +1186,7 @@ export default function Sign() {
               ].filter(tab => tab.id === modalTab).map(tab => (
                 <button
                   key={tab.id}
-                  className="flex items-center gap-2 px-5 py-3 font-semibold text-sm transition border-b-2 cursor-default"
+                  className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-5 py-3 font-semibold text-xs sm:text-sm transition border-b-2 cursor-default"
                   style={{
                     borderBottomColor: modalTab === tab.id ? '#e8222c' : 'transparent',
                     color: modalTab === tab.id ? '#1a1a1a' : '#9ca3af',
@@ -1157,8 +1199,7 @@ export default function Sign() {
               ))}
             </div>
 
-            {/* ── Tab content area ── */}
-            <div className="flex flex-1 overflow-hidden" style={{ minHeight: 180, maxHeight: 280 }}>
+            <div className="flex flex-1 overflow-hidden" style={{ height: 280 }}>
 
               {/* Left icon strip (Type/Draw/Upload sub-tabs) — only for Signature / Initials tab */}
               {(modalTab === 'type' || modalTab === 'initials_tab') && (
@@ -1217,7 +1258,14 @@ export default function Sign() {
                           onChange={() => setSelectedFont(font.id)}
                           className="w-4 h-4 accent-green-500"
                         />
-                        <span className={font.cls} style={{ fontSize: font.size, color: '#1a1a1a', lineHeight: 1.1, flex: 1 }}>
+                        <span className={font.cls} style={{
+                            fontSize: font.size,
+                            color: '#1a1a1a',
+                            lineHeight: 1.1,
+                            flex: 1,
+                            transform: 'translate3d(0,0,0)',
+                            backfaceVisibility: 'hidden',
+                          }}>
                           {modalTab === 'initials_tab' ? (initials || 'ME') : (name || 'Signature')}
                         </span>
                       </label>
@@ -1308,36 +1356,43 @@ export default function Sign() {
             </div>
 
             {/* Color picker row for type/draw */}
-            {(modalTab === 'type' || modalTab === 'initials_tab') && (modalSubTab === 'type' || modalSubTab === 'draw') && (
-              <div className="flex items-center gap-3 px-8 py-3 border-t border-gray-100">
-                <span className="text-xs font-semibold text-gray-500">Color:</span>
-                {PRESET_COLORS.map(p => (
-                  <button key={p.color}
-                    onClick={() => setSigEditColor(p.color)}
-                    className="w-7 h-7 rounded-full border-2 transition flex items-center justify-center"
-                    style={{
-                      background: p.color,
-                      borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent',
-                      boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none',
-                    }}
-                    title={p.label}
-                  />
-                ))}
-                {/* Color wheel / custom picker */}
-                <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center"
+            <div className="flex items-center gap-3 px-8 border-t border-gray-100 overflow-hidden"
+              style={{
+                height: ((modalTab === 'type' || modalTab === 'initials_tab') && (modalSubTab === 'type' || modalSubTab === 'draw')) ? 53 : 0,
+                paddingTop: ((modalTab === 'type' || modalTab === 'initials_tab') && (modalSubTab === 'type' || modalSubTab === 'draw')) ? 12 : 0,
+                paddingBottom: ((modalTab === 'type' || modalTab === 'initials_tab') && (modalSubTab === 'type' || modalSubTab === 'draw')) ? 12 : 0,
+                borderTopColor: ((modalTab === 'type' || modalTab === 'initials_tab') && (modalSubTab === 'type' || modalSubTab === 'draw')) ? 'rgba(241, 245, 249, 1)' : 'transparent',
+                transition: 'all 0.3s ease-in-out',
+                opacity: ((modalTab === 'type' || modalTab === 'initials_tab') && (modalSubTab === 'type' || modalSubTab === 'draw')) ? 1 : 0,
+              }}
+            >
+              <span className="text-xs font-semibold text-gray-500">Color:</span>
+              {PRESET_COLORS.map(p => (
+                <button key={p.color}
+                  onClick={() => setSigEditColor(p.color)}
+                  className="w-7 h-7 rounded-full border-2 transition flex items-center justify-center"
                   style={{
-                    background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                    borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
-                    boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
+                    background: p.color,
+                    borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent',
+                    boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none',
                   }}
-                  title="Custom color">
-                  <input type="color" value={sigEditColor}
-                    onChange={e => setSigEditColor(e.target.value)}
-                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-                  />
-                </label>
-              </div>
-            )}
+                  title={p.label}
+                />
+              ))}
+              {/* Color wheel / custom picker */}
+              <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center"
+                style={{
+                  background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                  borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
+                  boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
+                }}
+                title="Custom color">
+                <input type="color" value={sigEditColor}
+                  onChange={e => setSigEditColor(e.target.value)}
+                  className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                />
+              </label>
+            </div>
 
             {/* Modal footer */}
             <div className="shrink-0 flex items-center justify-end gap-3 px-8 py-4 border-t border-gray-100">

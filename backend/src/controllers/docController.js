@@ -349,6 +349,11 @@ export const updateSignatureCoords = async (req, res) => {
             return res.status(404).json({ error: 'Document not found' });
         }
 
+        const signature = await getSignatureById(signatureId);
+        if (!signature || signature.document_id !== documentId) {
+            return res.status(404).json({ error: 'Signature not found on this document' });
+        }
+
         const updatedSignature = await updateSignatureCoordinates(signatureId, { pageNumber, x, y, metadata });
         if (!updatedSignature) {
             return res.status(404).json({ error: 'Signature not found' });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import NeonSweepButton from '../components/NeonSweepButton';
+import { useActivitySpinner } from '../lib/useActivitySpinner.jsx';
 import { Document, Page } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -105,6 +106,9 @@ export default function Dashboard() {
   const pageCanvasRef = useRef(null);
   const touchStartRef = useRef(null);
   const token = localStorage.getItem('token');
+
+  /* ── Activity spinner (drag/upload/save feedback) ── */
+  const { startActivity, stopActivity, ActivitySpinner } = useActivitySpinner();
 
   const [documents, setDocuments] = useState([]);
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);
@@ -591,6 +595,7 @@ export default function Dashboard() {
       return;
     }
 
+    startActivity('Placing field…');
     try {
       const { createSignature } = await import('../lib/documents');
       const newSig = await createSignature(selectedDocumentId, { pageNumber: currentPage, x, y, type, metadata });
@@ -602,6 +607,7 @@ export default function Dashboard() {
       }
       setShowMobileSidebar(false);
     } catch (err) { showToast('⚠️ ' + (err.message || 'Unable to place field')); }
+    finally { stopActivity(); }
   };
 
   const handleDrop = async (e) => {
@@ -635,6 +641,12 @@ export default function Dashboard() {
     e.stopPropagation();
     setSelectedFieldId(sigId);
     pushUndo(signatures); // snapshot before move
+
+    // Touch support for mobile
+    const isTouch = !!e.touches;
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
     // Capture where inside the field the user grabbed (offset from the field's center)
     if (pageCanvasRef.current) {
       const rect = pageCanvasRef.current.getBoundingClientRect();
@@ -642,17 +654,17 @@ export default function Dashboard() {
       if (sigField) {
         const centerX = (sigField.x / 100) * rect.width  + rect.left;
         const centerY = (sigField.y / 100) * rect.height + rect.top;
-        dragOffsetRef.current = { ox: e.clientX - centerX, oy: e.clientY - centerY };
+        dragOffsetRef.current = { ox: clientX - centerX, oy: clientY - centerY };
       }
     }
-    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    dragStartPosRef.current = { x: clientX, y: clientY };
     hasMovedRef.current = false;
     setDraggingFieldId(sigId);
   };
 
   const handleResizeStart = (e, sig, dir) => {
     e.stopPropagation();
-    e.preventDefault();
+    if (e.cancelable) e.preventDefault();
     pushUndo(signatures); // snapshot before resize
     if (!pageCanvasRef.current) return;
     const { w, h } = getFieldSize(sig);
@@ -673,7 +685,12 @@ export default function Dashboard() {
     const meta = sig.metadata || {};
     const defaultPadX = sig.type === 'stamp' ? 8 : 6;
     const defaultPadY = sig.type === 'stamp' ? 6 : 4;
-    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+
+    const isTouch = !!e.touches;
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
+    dragStartPosRef.current = { x: clientX, y: clientY };
     hasMovedRef.current = false;
     setResizingInfo({ 
       fieldId: sig.id, dir, anchorX, anchorY, currentH: h, currentW: w,
@@ -685,17 +702,24 @@ export default function Dashboard() {
   };
 
   const handleGlobalMouseMove = (e) => {
+    const isTouch = !!e.touches;
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
     if (resizingInfo || draggingFieldId) {
-      const dx = e.clientX - dragStartPosRef.current.x;
-      const dy = e.clientY - dragStartPosRef.current.y;
+      if (isTouch && e.cancelable) {
+        e.preventDefault();
+      }
+      const dx = clientX - dragStartPosRef.current.x;
+      const dy = clientY - dragStartPosRef.current.y;
       if (Math.sqrt(dx * dx + dy * dy) > 3) {
         hasMovedRef.current = true;
       }
     }
     if (resizingInfo && pageCanvasRef.current) {
       const rect = pageCanvasRef.current.getBoundingClientRect();
-      const mx = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-      const my = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+      const mx = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const my = Math.max(0, Math.min(rect.height, clientY - rect.top));
       const { dir, anchorX, anchorY, fieldId } = resizingInfo;
       let newW, newH, newCX, newCY;
       let padTop = resizingInfo.padTop, padBottom = resizingInfo.padBottom, padLeft = resizingInfo.padLeft, padRight = resizingInfo.padRight;
@@ -782,8 +806,8 @@ export default function Dashboard() {
 
     // Subtract grab offset so the field doesn't snap its center to the cursor
     const { ox, oy } = dragOffsetRef.current;
-    const rawCX = e.clientX - ox - rect.left; // desired center X in px relative to page
-    const rawCY = e.clientY - oy - rect.top;  // desired center Y in px relative to page
+    const rawCX = clientX - ox - rect.left; // desired center X in px relative to page
+    const rawCY = clientY - oy - rect.top;  // desired center Y in px relative to page
 
     // Clamp so no part of the field escapes the page boundary
     const halfW = w / 2;
@@ -806,12 +830,14 @@ export default function Dashboard() {
       const field = signatures.find(s => s.id === resizingInfo.fieldId);
       setResizingInfo(null);
       if (field && selectedDocumentId && hasMovedRef.current) {
+        startActivity('Saving size…');
         try {
           await updateSignatureCoords(selectedDocumentId, field.id, {
             pageNumber: field.page_number ?? field.pageNumber,
             x: field.x, y: field.y, metadata: field.metadata,
           });
         } catch { showToast('⚠️ Failed to save size'); }
+        finally { stopActivity(); }
       }
       hasMovedRef.current = false;
       return;
@@ -824,11 +850,12 @@ export default function Dashboard() {
       const sigToUpdate = signatures.find(s => s.id === draggingFieldId);
       setDraggingFieldId(null);
       if (sigToUpdate && selectedDocumentId && hasMovedRef.current) {
+        startActivity('Saving position…');
         try {
           await updateSignatureCoords(selectedDocumentId, draggingFieldId, { pageNumber: sigToUpdate.pageNumber || sigToUpdate.page_number, x: sigToUpdate.x, y: sigToUpdate.y });
         } catch (err) {
           showToast('⚠️ Failed to save field position');
-        }
+        } finally { stopActivity(); }
       }
       hasMovedRef.current = false;
     }
@@ -837,9 +864,13 @@ export default function Dashboard() {
   useEffect(() => {
     window.addEventListener('mousemove', handleGlobalMouseMove);
     window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('touchmove', handleGlobalMouseMove, { passive: false });
+    window.addEventListener('touchend', handleGlobalMouseUp);
     return () => {
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('touchmove', handleGlobalMouseMove);
+      window.removeEventListener('touchend', handleGlobalMouseUp);
     };
   }, [draggingFieldId, resizingInfo, signatures, selectedDocumentId]);
 
@@ -1278,6 +1309,7 @@ export default function Dashboard() {
   /* ═══════ RENDER ═══ */
   return (
     <div style={{ height: 'calc(100vh - 56px)', display: 'flex', flexDirection: 'column', background: '#f0f1f5', overflow: 'hidden' }}>
+      <ActivitySpinner />
 
       {/* Toast */}
       {toast && (
@@ -1643,6 +1675,7 @@ export default function Dashboard() {
                     }}
                     onClick={e => { e.stopPropagation(); setSelectedFieldId(sig.id); }}
                     onMouseDown={e => { if (!isEditing && !resizingInfo) { handleFieldMouseDown(e, sig.id); } }}
+                    onTouchStart={e => { if (!isEditing && !resizingInfo) { handleFieldMouseDown(e, sig.id); } }}
                     onDoubleClick={e => handleFieldDoubleClick(e, sig)}>
 
                     {sig.status === 'signed' ? (
@@ -1740,6 +1773,7 @@ export default function Dashboard() {
                             className="absolute w-3 h-3 bg-white rounded-sm z-30 border-2"
                             style={{ ...style, borderColor: activeColor }}
                             onMouseDown={e => handleResizeStart(e, sig, dir)}
+                            onTouchStart={e => handleResizeStart(e, sig, dir)}
                             onClick={e => e.stopPropagation()} />
                         ))}
                       </>
@@ -2238,46 +2272,53 @@ export default function Dashboard() {
               onClick={() => { setSigEditModal(null); setStampModal(null); }} />
 
             <div className="relative w-full bg-white rounded-2xl flex flex-col animate-fade-in"
-              style={{ maxWidth: 700, maxHeight: '90vh', boxShadow: '0 24px 80px rgba(0,0,0,0.2)' }}>
+              style={{
+                maxWidth: 700,
+                width: 'calc(100% - 16px)',
+                maxHeight: '95vh',
+                boxShadow: '0 24px 80px rgba(0,0,0,0.2)',
+                transform: 'translate3d(0,0,0)',
+                backfaceVisibility: 'hidden',
+              }}>
               
               {/* Modal header */}
-              <div className="flex items-center justify-between px-8 pt-7 pb-5 shrink-0">
-                <h2 className="font-bold text-gray-900" style={{ fontSize: 24 }}>Set your signature details</h2>
+              <div className="flex items-center justify-between px-4 py-4 sm:px-8 sm:pt-7 sm:pb-5 shrink-0 border-b border-gray-50">
+                <h2 className="font-bold text-gray-900 text-[18px] sm:text-[24px]">Set your signature details</h2>
                 <button onClick={() => { setSigEditModal(null); setStampModal(null); }} className="p-2 text-gray-400 hover:text-gray-600 transition rounded">
                   <XIcon />
                 </button>
               </div>
 
               {/* Name + Initials + Avatar row (only for sig/initials) */}
-              <div className="flex items-start gap-4 px-8 pb-5 shrink-0">
-                <div className="shrink-0 flex items-center justify-center rounded-full mt-5" style={{ width: 44, height: 44, border: '2px solid #e8222c' }}>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4 px-4 sm:px-8 py-4 sm:pb-5 shrink-0">
+                <div className="hidden sm:flex shrink-0 items-center justify-center rounded-full mt-5" style={{ width: 44, height: 44, border: '2px solid #e8222c' }}>
                   <User className="w-6 h-6 text-[#e8222c] opacity-60" />
                 </div>
                 <div className="flex-1">
                   <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full name:</label>
                   <input value={sigEditText} onChange={e => setSigEditText(e.target.value)} placeholder="Your name"
                     disabled={isStamp}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-800 outline-none transition disabled:opacity-50"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium text-gray-800 outline-none transition disabled:opacity-50"
                     style={{ background: '#f9fafb' }} onFocus={e => e.target.style.borderColor = '#e8222c'} onBlur={e => e.target.style.borderColor = '#d1d5db'} />
                 </div>
-                <div style={{ width: 160 }}>
+                <div className="w-full sm:w-[160px]">
                   <label className="block text-sm font-semibold text-gray-700 mb-1.5">Initials:</label>
-                  <div className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-bold text-gray-800 uppercase flex items-center"
-                    style={{ background: '#f3f4f6', height: 42, opacity: isStamp ? 0.5 : 1 }}>
+                  <div className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-bold text-gray-800 uppercase flex items-center"
+                    style={{ background: '#f3f4f6', height: 40, opacity: isStamp ? 0.5 : 1 }}>
                     {sigEditText.trim().split(/\s+/).filter(Boolean).map(w => w[0]?.toUpperCase() || '').join('') || autoInitials}
                   </div>
                 </div>
               </div>
 
               {/* ── Tabs: Signature | Initials | Company Stamp ── */}
-              <div className="flex items-center border-b border-gray-200 px-8 shrink-0">
+              <div className="flex items-center border-b border-gray-200 px-4 sm:px-8 shrink-0">
                 {[
                   { id: 'type', label: 'Signature', icon: <PenTool className="w-4 h-4" /> },
-                  { id: 'initials_tab', label: 'Initials', icon: <span className="font-bold" style={{ fontSize: 12 }}>AC</span> },
+                  { id: 'initials_tab', label: 'Initials', icon: <span className="font-bold text-[11px] sm:text-[12px]">AC</span> },
                   { id: 'stamp', label: 'Company Stamp', icon: <BadgeCheck className="w-4 h-4" /> },
                 ].map(tab => (
                   <button key={tab.id}
-                    className="flex items-center gap-2 px-5 py-3 font-semibold text-sm transition border-b-2 cursor-default"
+                    className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-5 py-3 font-semibold text-xs sm:text-sm transition border-b-2 cursor-default"
                     style={{
                       borderBottomColor: currentMainTab === tab.id ? '#e8222c' : 'transparent',
                       color: currentMainTab === tab.id ? '#1a1a1a' : '#9ca3af',
@@ -2289,8 +2330,7 @@ export default function Dashboard() {
                 ))}
               </div>
 
-              {/* ── Tab content area ── */}
-              <div className="flex flex-1 overflow-hidden" style={{ minHeight: 180, maxHeight: 280 }}>
+              <div className="flex flex-1 overflow-hidden" style={{ height: 280 }}>
                 
                 {/* Left icon strip (Type/Draw/Upload sub-tabs) */}
                 {!isStamp && (
@@ -2321,7 +2361,14 @@ export default function Dashboard() {
                         <label key={font.id} className="flex items-center gap-4 px-4 py-3 cursor-pointer transition"
                           style={{ background: sigEditFont === font.id ? '#f0f9f0' : '#fff', borderBottom: idx < SIG_FONTS.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
                           <input type="radio" name="sigFont" value={font.id} checked={sigEditFont === font.id} onChange={() => setSigEditFont(font.id)} className="w-4 h-4 accent-green-500" />
-                          <span className={font.cls} style={{ fontSize: font.size * 0.85, color: sigEditColor, lineHeight: 1.1, flex: 1 }}>
+                          <span className={font.cls} style={{
+                            fontSize: font.size * 0.85,
+                            color: sigEditColor,
+                            lineHeight: 1.1,
+                            flex: 1,
+                            transform: 'translate3d(0,0,0)',
+                            backfaceVisibility: 'hidden',
+                          }}>
                             {sigEditText || (isInitials ? autoInitials : 'Tanmay Vijay Kudkar')}
                           </span>
                         </label>
@@ -2412,28 +2459,34 @@ export default function Dashboard() {
               </div>
 
               {/* Color picker row (only for type) */}
-              {!isStamp && activeSubTab === 'type' && (
-                <div className="flex items-center gap-3 px-8 py-3 border-t border-gray-100 shrink-0">
-                  <span className="text-xs font-semibold text-gray-500">Color:</span>
-                  {PRESET_COLORS.map(p => (
-                    <button key={p.color} onClick={() => setSigEditColor(p.color)} className="w-7 h-7 rounded-full border-2 transition"
-                      style={{ background: p.color, borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent', boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none' }} title={p.label} />
-                  ))}
-                  {/* Custom color picker */}
-                  <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center shrink-0 transition"
-                    style={{
-                      background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
-                      borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
-                      boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
-                    }}
-                    title="Custom color">
-                    <input type="color" value={sigEditColor}
-                      onChange={e => setSigEditColor(e.target.value)}
-                      className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-                    />
-                  </label>
-                </div>
-              )}
+              <div className="flex items-center gap-3 px-8 border-t border-gray-100 shrink-0 overflow-hidden"
+                style={{
+                  height: (!isStamp && activeSubTab === 'type') ? 53 : 0,
+                  paddingTop: (!isStamp && activeSubTab === 'type') ? 12 : 0,
+                  paddingBottom: (!isStamp && activeSubTab === 'type') ? 12 : 0,
+                  borderTopColor: (!isStamp && activeSubTab === 'type') ? 'rgba(241, 245, 249, 1)' : 'transparent',
+                  transition: 'all 0.3s ease-in-out',
+                  opacity: (!isStamp && activeSubTab === 'type') ? 1 : 0,
+                }}>
+                <span className="text-xs font-semibold text-gray-500">Color:</span>
+                {PRESET_COLORS.map(p => (
+                  <button key={p.color} onClick={() => setSigEditColor(p.color)} className="w-7 h-7 rounded-full border-2 transition"
+                    style={{ background: p.color, borderColor: sigEditColor === p.color ? '#94a3b8' : 'transparent', boxShadow: sigEditColor === p.color ? `0 0 0 2px white, 0 0 0 4px ${p.color}` : 'none' }} title={p.label} />
+                ))}
+                {/* Custom color picker */}
+                <label className="relative w-7 h-7 rounded-full overflow-hidden border-2 cursor-pointer flex items-center justify-center shrink-0 transition"
+                  style={{
+                    background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+                    borderColor: !PRESET_COLORS.find(p => p.color === sigEditColor) ? '#94a3b8' : '#e5e7eb',
+                    boxShadow: !PRESET_COLORS.find(p => p.color === sigEditColor) ? `0 0 0 2px white, 0 0 0 4px ${sigEditColor}` : 'none',
+                  }}
+                  title="Custom color">
+                  <input type="color" value={sigEditColor}
+                    onChange={e => setSigEditColor(e.target.value)}
+                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                  />
+                </label>
+              </div>
 
               {/* Modal footer */}
               <div className="shrink-0 flex items-center justify-end px-8 py-5 border-t border-gray-100">
